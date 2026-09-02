@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@applik8s/cli": "workspace:*",
+    "@applik8s/testing": "workspace:*",
     "@tanstack/router-cli": "1.167.19",
     "@vitejs/plugin-react": "^6.0.3",
     "vite": "^8.1.5"

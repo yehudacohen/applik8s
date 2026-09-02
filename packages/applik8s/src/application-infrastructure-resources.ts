@@ -766,6 +766,9 @@ export function recordApplicationProviderGraph(
         // an apparently valid provider selection impossible to lower.
         observability: applicationTypeKroGraphValue(implementation) as JsonValue,
       } : {}),
+      ...(tokenName === 'AgentHarness' && implementation && typeof implementation === 'object'
+        ? { agentHarness: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
       ...(tokenName === 'HttpExposure' && implementation && typeof implementation === 'object'
         ? { httpExposure: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),

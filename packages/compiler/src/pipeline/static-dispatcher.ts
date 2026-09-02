@@ -17,10 +17,11 @@ export function generatedDispatcherEntrypoint(userEntrypoint: string, operator: 
 }
 
 function dispatcherProgram(operatorSource: string, hasCapabilities: boolean, hasKubernetesRead: boolean, capturedImports: readonly string[] = []): string {
-  return `${capturedImports.join('\n')}${capturedImports.length > 0 ? '\n' : ''}${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}${hasKubernetesRead ? "import { kubernetesRead } from 'applik8s:handler/kubernetes';\n" : ''}
+  return `${capturedImports.join('\n')}${capturedImports.length > 0 ? '\n' : ''}${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}${hasKubernetesRead ? "import { kubernetesRead } from 'applik8s:handler/kubernetes';\nimport { installApplicationKubernetesCapabilityWitHost } from '@applik8s/applik8s/kubernetes-cluster-wit-runtime';\n" : ''}
 import { dispatchOperatorHandler } from '@applik8s/sdk';
 
 const selectedExport = { definition: ${operatorSource} };
+${hasKubernetesRead ? 'installApplicationKubernetesCapabilityWitHost(kubernetesRead);\n' : ''}
 
 export async function handle(inputJson: string): Promise<string> {
   try {

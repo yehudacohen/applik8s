@@ -320,6 +320,7 @@ export function applicationHostFrameworkCredentialDependencies(
       || node.kind === 'mcpServer'
       || node.kind === 'schedule'
       || node.kind === 'actor'
+      || node.kind === 'codeAgent'
       || node.kind === 'lakehousePublication',
   )) {
     credentials.push({
@@ -335,7 +336,7 @@ function applicationHostCallableProviders(
 ): readonly ApplicationProviderNode[] {
   const consumers = new Set(
     graph.nodes.flatMap((node) => {
-      if (node.kind === 'actor') return [node.id];
+      if (node.kind === 'actor' || node.kind === 'codeAgent') return [node.id];
       return [];
     }),
   );

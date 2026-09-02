@@ -10,19 +10,16 @@ real client and produces portable, redacted evidence.
 import { journey } from '@applik8s/testing';
 
 export default journey('guestbook/create-entry', async context => {
-  const author = context.identity('author');
-
-  await context.as(author, async admission => {
-    await admission.call('GuestBookEntry.create', {
-      message: 'Hello from a journey',
-    });
-  });
-
-  context.assert.semantic('entry-visible', {
-    model: 'GuestBookEntry',
-    state: 'present',
-  });
-});
+  const browser = context.browser();
+  await browser.goto('/');
+  await browser.fill({ by: 'label', value: 'Name' }, 'Journey Author');
+  await browser.fill({ by: 'label', value: 'Message' }, 'Hello from a journey');
+  await browser.click({ by: 'role', role: 'button', name: 'Create entry' });
+  await browser.expectText(
+    { by: 'text', value: 'Hello from a journey' },
+    'Hello from a journey',
+  );
+}, { modes: ['browser'], requirements: ['browser'] });
 ```
 
 Journeys are not a second runtime API. Unsupported provider semantics are reported as `blocked`, never

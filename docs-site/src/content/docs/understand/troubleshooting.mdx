@@ -1,0 +1,19 @@
+---
+title: Diagnose a failure
+description: Start from a stable diagnostic, prove the cause, and apply the bounded remediation.
+---
+
+## `V09_BASELINE_RELEASE_UNAVAILABLE`
+
+The migration planner cannot prove an exact released v0.8 baseline. Confirm the package/tag/graph manifest,
+then rerun the read-only proposal. Do not substitute source-candidate state; mutation remains disabled.
+
+## `JOURNEY_PROVIDER_INCOMPATIBLE`
+
+The selected adapter cannot provide a declared journey requirement. Choose a maintained profile/adapter or
+remove the assertion only if it is genuinely outside the product contract. The result remains `blocked`.
+
+## A plan fails before mutation
+
+Read the diagnostic's node, capability, required guarantee, and configuration provenance. Correct the
+ambiguous or missing binding, rerun `applik8s explain`, and review the new plan digest before applying.

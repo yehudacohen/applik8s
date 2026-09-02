@@ -218,7 +218,6 @@
     "check:v09:decisions": "bunx vitest run packages/applik8s/test/application-domain-decisions.vertical.test.ts",
     "test:v09:saga-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-saga-live.e2e.test.ts",
     "test:v09:code-agent-local": "APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-code-agent-local.e2e.test.ts",
-    "test:v09:code-agent-celld": "APPLIK8S_E2E_CELLD=1 APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-code-agent-celld.e2e.test.ts",
     "test:v09:builder-live": "APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-builder-opencode-live.e2e.test.ts",
     "test:v09:chirp-aws-local": "node scripts/check-chirp-start-build.mjs && bun run scripts/run-v09-chirp-aws-live.ts",
     "test:v09:chirp-aws": "node scripts/check-chirp-start-build.mjs && APPLIK8S_E2E_AWS=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-chirp-aws-live.e2e.test.ts",

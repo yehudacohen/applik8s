@@ -257,7 +257,7 @@ v0.9 does not automatically promote v0.8 beta, preview, or experimental features
 | `ML.model()` | Beta and non-blocking unless materially different providers pass shared conformance |
 | `researchAgent()` / `WebSearch` / `SourceRetriever` / `ResearchEvidence` | Stable candidate after the complete research lifecycle, authority, evidence, restart, replacement, and provider-conformance gates pass |
 | SearXNG `WebSearch` provider | Maintained v0.9 provider; release-blocking after TypeKro/Alchemy deployment, external binding, safe retrieval, readiness, upgrade, and teardown qualification |
-| `codeAgent()` | Release-blocking preview maintained composition; requires one real OpenCode-backed deterministic-local vertical and one Celld-backed vertical with stable run/workspace identity, explicit authority, retry reattachment, cancellation, provider replacement, and ordered cleanup |
+| `codeAgent()` | Release-blocking preview maintained composition; requires one real OpenCode-backed local/worktree vertical with stable run/workspace identity, explicit authority, idempotent retry, cancellation, process replacement, and ordered cleanup. Distributed Celld/OpenCode is deferred and blocked pending upstream runtime direction. |
 | Builder development environment | Release-blocking preview development integration; requires the complete closed loopback-OpenCode change journey while remaining independent from Celld and a healthy generated application |
 | `journey()` | Development/testing contract; may stabilize independently from runtime semantics |
 | Stable v0.8 authoring/runtime contracts | 1.0 candidates unless explicitly deprecated during v0.9 |
@@ -274,7 +274,7 @@ Maturity controls compatibility promises, not whether an accepted v0.9 deliverab
 
 - every stable semantic-core and migration gate named by this manifesto;
 - the complete maintained research-agent and SearXNG lifecycle;
-- the complete real `codeAgent()` deterministic-local and Celld/OpenCode lifecycle;
+- the complete real local/worktree `codeAgent()` OpenCode lifecycle; distributed Celld/OpenCode remains a post-v0.9 blocked provider investigation;
 - Builder's independent real-OpenCode closed change journey;
 - the deployed-provider Saga interruption, compensation, irreversible-boundary, unknown-outcome, and
   upgrade matrix;
@@ -2790,7 +2790,7 @@ Documentation is not “done” if it papers over an awkward API that can still 
   production-qualified researchAgent(), WebSearch, SourceRetriever, ResearchEvidence, and SearXNG provider
   managed-Kubernetes and external-SearXNG lifecycle/conformance evidence
   end-to-end search → retrieval → evidence → artifact acceptance journey
-  complete specialized code-agent deterministic-local and Celld/OpenCode preview qualification
+  complete specialized code-agent local/worktree OpenCode preview qualification
   complete independent Builder real-OpenCode closed change journey
     (release-blocking previews; maturity permits evolution, not omission)
   third clean-context review across the complete candidate semantic surface
@@ -3231,9 +3231,8 @@ Applik8s v0.9.0 is ready only when:
     assert application events without knowing physical providers;
 16. `researchAgent()`, its search/retrieval/evidence contracts, and the maintained SearXNG `WebSearch`
     provider pass the complete research lifecycle, authority, evidence, recovery, replacement, and teardown
-    gates, while `codeAgent()` passes real deterministic-local and Celld/OpenCode execution, authority,
-    reattachment, cancellation, provider-replacement, and ordered-cleanup gates without becoming a stable
-    1.0 contract;
+    gates, while `codeAgent()` passes real local/worktree OpenCode execution, authority, idempotent retry,
+    cancellation, process-replacement, and ordered-cleanup gates without becoming a stable 1.0 contract;
 17. Builder can prompt, plan, review, preview, verify, apply, and conflict-safely undo an isolated
     application change through replaceable agent/workspace/source capabilities while surviving a broken
     generated application;

@@ -1,14 +1,14 @@
 # RFP: Specialized Code and Research Agent Compositions
 
-**Status:** Accepted mixed-maturity contract; research vertical release-blocking, code vertical
-release-blocking preview with deterministic-local and Celld/OpenCode qualification passing;
-architecture frozen on 2026-08-30
+**Status:** Accepted mixed-maturity contract; research vertical release-blocking; provider-neutral
+code-agent preview release-blocking through its local OpenCode journey; Celld/OpenCode distributed
+provider deferred and blocked on upstream runtime direction as of 2026-09-02
 
 **Audience:** Applik8s maintainers, Agentic Start authors, implementing agents, and provider authors
 
 **Requested by:** The v0.9 semantic-completion and 1.0-readiness program
 
-**Revised:** 2026-08-30
+**Revised:** 2026-09-02
 
 **Target:** Applik8s v0.9 production-qualified research vertical and code-agent preview
 
@@ -16,12 +16,15 @@ architecture frozen on 2026-08-30
 
 Applik8s already has typed agents, actors, durable execution, tools, approval signals, identity/resource
 authority, application events, object storage, and provider-neutral dependency injection. Code and research
-agents need recognizable product surfaces, but they do not require new foundational runtimes.
+agents need recognizable product surfaces. A code agent is a first-class, provider-neutral semantic
+execution-family node. Its placement and persistence are properties of the selected `AgentHarness`, not
+of the application-domain declaration.
 
-This RFP defines `codeAgent()` and `researchAgent()` as maintained compositions over the existing agent and
-actor model. They bundle useful capability contracts, defaults, events, evidence, and UI integration while
-remaining replaceable. OpenCode is one `AgentHarness` provider. SearXNG is one `WebSearch` provider. Neither
-provider becomes part of application semantics.
+This RFP defines `codeAgent()` and `researchAgent()` as maintained application modules. They bundle useful
+capability contracts, defaults, events, evidence, and UI integration while remaining replaceable. The
+code-agent module registers a dedicated graph node. v0.9 qualifies the real local/worktree OpenCode path;
+distributed implementations remain replaceable behind `AgentHarness`. SearXNG is one
+`WebSearch` provider. Neither provider becomes part of application semantics.
 
 The research vertical is a v0.9 release requirement. The code-agent vertical remains preview. Neither may
 widen shell, repository, network, or search authority merely because an application uses a convenient
@@ -48,18 +51,16 @@ const Source = SourceRepository.named("primary");
 
 export const ProductBuilder = application.include(
   codeAgent("product-builder.v1", {
-    actor: { key: RepositoryId },
     identity: CoderIdentity,
     model: CodingModel,
     harness: CodingHarness,
     workspace: Workspace,
     source: Source,
-    tools: [RunTests, PreviewApplication, RequestReview],
-    authority: {
-      write: "workspace",
-      shell: ["bun", "git diff", "git status"],
-      network: "declared",
-    },
+    process: ProcessRunner.named("bounded"),
+    validation: [
+      { executable: "bun", arguments: ["test"] },
+      { executable: "bun", arguments: ["run", "typecheck"] },
+    ],
   }),
 );
 
@@ -98,21 +99,24 @@ underlying contracts.
 
 ## Normative decisions
 
-1. Specialized agents are application modules/compositions, not new durable primitives or subclasses.
+1. Specialized agents are application modules, not subclasses. `codeAgent()` registers a first-class
+   provider-neutral semantic node; `researchAgent()` composes the general agent model.
 2. `codeAgent()` and `researchAgent()` return reusable modules; `application.include(...)` is the canonical
-   registration spelling and returns the module's callable actor-backed agent handle.
-3. Persistent specialized agents declare their actor key and identity explicitly.
+   registration spelling and returns an ordinary Promise-returning callable handle.
+3. Research agents declare their durable thread key. Code agents use the required `repositoryId` as their
+   stable isolation and fencing key without exposing a provider-specific actor or cell identity.
 4. Every powerful capability is explicit in the declaration and application plan.
 5. Provider implementations are replaceable behind small interfaces.
-6. OpenCode is an `AgentHarness` provider, not the canonical agent runtime.
+6. OpenCode v2 behind `AgentHarness` is the maintained first-party code-agent implementation in v0.9.
+   The local/worktree provider is the release-qualified preview path. A distributed Celld provider is a
+   later milestone and must not be approximated by reimplementing OpenCode's filesystem or agent loop.
 7. SearXNG is a `WebSearch` provider, not the public research API.
 8. Workspace, repository, shell/process, browser, network, and evidence capabilities remain separable.
 9. Human approvals use existing signal/event authority; no special approval channel is invented.
 10. Specialized lifecycle facts enter `application.events` only according to declared contracts.
-11. `researchAgent()`, `WebSearch`, `ResearchEvidence`, the maintained SearXNG provider, `codeAgent()`,
-    OpenCode, and Builder block v0.9 release qualification. The code and Builder surfaces remain preview
-    maturity, but each must pass its complete real-provider journey; preview maturity is not an omission
-    mechanism.
+11. `researchAgent()`, `WebSearch`, `ResearchEvidence`, the maintained SearXNG provider, the local
+    `codeAgent()` OpenCode journey, and Builder block v0.9 release qualification. The code and Builder
+    surfaces remain preview maturity, but each included path must pass its complete real-provider journey.
 
 ## Architectural boundary
 
@@ -158,6 +162,11 @@ Retrieves an explicitly selected search result under separate network authority.
 canonicalization, redirect limits, DNS rebinding protection, private/link-local/metadata-address denial,
 scheme and port policy, byte/time/content-type limits, decompression bounds, cancellation, and normalized
 document extraction. Search authority alone never grants retrieval authority.
+
+JavaScript-rendered retrieval and interactive browser sessions are governed by
+[`rfp-v09-durable-browser-actors.md`](rfp-v09-durable-browser-actors.md). A browser-backed implementation
+must preserve this provider-neutral result/evidence contract; research application code never branches on
+Moli or a browser protocol.
 
 ### `ResearchEvidence`
 
@@ -260,14 +269,15 @@ The maintained v0.9 research vertical includes:
 
 The maintained preview code vertical includes:
 
-- an OpenCode-backed `AgentHarness`;
+- a real local/worktree OpenCode v2 `AgentHarness` implementation;
 - a local/worktree `CodeWorkspace`;
 - Git source operations;
 - a bounded process runner.
 
-These provider-neutral contracts are published from `@applik8s/code-agent`. The maintained OpenCode
-adapter remains in `@applik8s/dev/agent/opencode-code-harness`, so importing the composition does not make
-OpenCode part of application semantics or pull a development harness into unrelated runtimes.
+These provider-neutral contracts are published from `@applik8s/code-agent`. The local adapter is a runtime
+implementation below those contracts, so importing the composition does not make OpenCode part of
+application semantics. Test doubles may implement `AgentHarness` for component tests. Distributed
+providers may be added after they satisfy the same contract and lifecycle suite; none is claimed by v0.9.
 
 A direct HTTP search adapter may be supplied when explicitly configured, but it is not a substitute for
 the managed and external SearXNG qualification gates.
@@ -276,80 +286,36 @@ Provider conformance tests cover cancellation, restart, capability scoping, secr
 limits, workspace replacement, source provenance, and teardown.
 
 Specialized agents standardize both semantic and implementation composition. `codeAgent()` and
-`researchAgent()` accept capability handles or implementation values for Actor runtime, Agent harness,
+`researchAgent()` accept capability handles or implementation values for Agent harness,
 workspace, repository, search, browser, process, and evidence dependencies. Inline dependencies remain
 private to the composition; separately provided handles remain reusable application capabilities. The
 expanded graph preserves each implementation identity, lifecycle, authority, readiness, and migration.
 
-## Celld-backed distributed execution
+## Deferred Celld/OpenCode distributed provider
 
-`codeAgent()` is actor-backed, so a distributed deployment may select Celld as the `ActorRuntime` that
-owns the logical coding-agent identity, mailbox, serialized turns, durable state, alarms, fencing, and
-recovery. OpenCode remains a replaceable `AgentHarness` provider invoked through an explicit capability;
-an OpenCode process or session is never the actor, the durable identity, or the state authority.
+The provider-neutral `codeAgent()` and `AgentHarness` contracts remain part of v0.9. The attempted
+Celld-native OpenCode provider is not. OpenCode currently requires filesystem and process behavior that
+the released Celld Workerd runtime does not provide, and Applik8s will not ship a partial virtual
+filesystem, an OpenCode-specific runtime fork, or a second authority disguised as compatibility code.
 
-The default distributed topology is therefore:
+The complete experimental implementation is preserved on `codex/v0.9-celld-opencode-parked`. It is
+blocked pending the upstream Celld maintainers' response on whether the missing Workerd-compatible
+filesystem/process surface belongs upstream and whether they will accept a contribution. This is a
+later-milestone provider investigation, not a v0.9 release gate. The upstream discussion is tracked at
+<https://github.com/denoland/celld/issues/180#issuecomment-5508529943>.
 
-```text
-codeAgent actor
-  -> ActorRuntime
-      -> Celld worker
-          -> typed AgentHarness capability
-              -> separately managed OpenCode harness
-                  -> leased CodeWorkspace
-```
+Resuming the provider requires an explicit design decision and the following evidence:
 
-OpenCode must not be embedded as an implicitly privileged library or child process inside the general
-Celld worker. The harness has its own execution identity, runtime-access declaration, process and network
-policy, cancellation boundary, readiness, lifecycle, and evidence. Physical co-location is permitted only
-when the resulting shared authority is explicitly requested, plan-visible, and no broader than the two
-separate declarations; it is not the default.
+- one pinned OpenCode artifact initializes and performs real filesystem and process work;
+- suspension, restoration, worker replacement, cancellation, and retry reattach to one logical run;
+- repository writes remain fenced and capability-scoped;
+- credentials, network access, output, CPU, memory, and storage are bounded;
+- cleanup is ordered and leaves no runtime, lease, workspace, or authorization residue; and
+- the implementation does not widen the general Celld actor provider or leak Celld into application APIs.
 
-The Celld turn invokes the harness with a stable run identity and an idempotent admission contract. A lost
-response or retried actor turn reattaches to the prior harness run rather than starting an untracked second
-run. Harness events are normalized into the provider-neutral run protocol and checkpointed before they
-advance actor state. Cancellation, timeout, and provider replacement retain terminal receipts and never
-infer completion from transport loss.
-
-The workspace is represented by a durable, serializable lease reference. Placement or volume affinity
-between a harness and workspace is provider topology, not application semantics. Workspace replacement,
-snapshot recovery, and loss are explicit lifecycle transitions; none silently changes the coding-agent
-identity. Teardown orders admission quiescence, harness cancellation, workspace release or retention,
-actor finalization, and provider cleanup according to declared policy.
-
-The independent Builder daemon is a separate deployment mode. It may run OpenCode as a loopback child
-behind `AgentHarness` and must remain usable without Celld or a healthy generated application. Builder's
-thread, attachments, mutation journal, approval state, preview, evidence, and undo remain daemon-owned and
-provider-neutral.
-
-These are two independent qualification paths:
-
-- **distributed code-agent preview:** `codeAgent()` → actor runtime → Celld worker → separately authorized
-  OpenCode harness, with durable actor/workspace/run identity and retry reattachment; and
-- **Builder preview:** independent Builder daemon → loopback OpenCode harness, with Builder-owned journal,
-  workspace lease, approval, evidence, apply, and undo authority.
-
-Builder inclusion never depends on Celld availability. Passing the loopback Builder journey does not
-qualify distributed `codeAgent()`, and passing the Celld vertical does not qualify Builder product behavior.
-
-`ApplicationPlan` and runtime evidence show the actor provider, harness provider, workspace provider,
-execution identities, network/process/filesystem authority, placement constraints, retention, and
-teardown order independently. Selecting Celld never grants OpenCode shell, repository, network, or Secret
-access implicitly.
-
-The actor-to-harness transport is a versioned authenticated protocol carrying stable run ID, actor/run
-fencing token, workspace lease reference, normalized request, scoped capability grant references,
-cancellation/deadline, and trace/causal metadata. The harness rejects stale fencing tokens, duplicate
-non-idempotent admission, unknown protocol versions, mismatched workspace leases, and grants outside its
-declared execution identity. Transport possession alone grants no repository, shell, network, or Secret
-authority.
-
-The workspace lease authority—not the harness process—owns base revision, mutable overlay, snapshots,
-retention, attachment to one active run, and release state. Harness replacement reattaches through that
-lease. Simultaneous writers require an explicit branch/merge contract; the default is one fenced writer.
-Workspace loss terminalizes or restores according to declared policy and can never be reported as a clean
-harness retry.
-
+A future Rivet agentOS or other distributed harness may qualify against the same contract. Provider
+selection must not alter application-domain code or make any particular actor runtime authoritative for
+application models, commands, workflows, identity, or audit history.
 ## Agentic Start integration
 
 Agentic Start may offer these modules as configurable application features:
@@ -383,11 +349,13 @@ consumer value.
 ## Implementation increments
 
 1. Freeze the small capability contracts and composition expansion.
-2. Build the OpenCode harness and local workspace provider behind those contracts.
+2. Qualify the local/worktree OpenCode v2 harness and workspace provider behind those contracts; retain
+   distributed harnesses as later provider work.
 3. Build WebSearch/ResearchEvidence with managed and external SearXNG providers.
 4. Complete search, safe retrieval, evidence, citation, artifact, signal, event, and Agentic Start
    integration.
-5. Add plan, authority, lifecycle, interruption recovery, provider replacement, and cleanup evidence.
+5. Add plan, authority, lifecycle, interruption recovery, OpenCode process replacement, upgrade, and
+   cleanup evidence for the qualified local provider.
 
 ## Acceptance
 
@@ -402,25 +370,25 @@ consumer value.
 - External SearXNG owns no infrastructure and passes the same provider-neutral WebSearch conformance.
 - Malicious, malformed, oversized, disallowed, and unreachable results remain untrusted, bounded, and
   inspectable; they cannot grant tools or become instructions.
-- Swapping a maintained harness/search provider does not change agent domain code.
+- Replacing the harness behind the provider-neutral contract or swapping a maintained search provider does
+  not change agent domain code; v0.9 does not require a second first-party harness implementation.
 - Expanded plans expose every powerful capability and scope.
 - Workspace and agent identity survive runtime replacement correctly.
-- A real public `codeAgent()` runs through deterministic-local and Celld-backed execution against a real
-  OpenCode process rather than a protocol double.
-- The Celld-backed code agent retries a lost harness response by reattaching to the same stable run,
-  serializes concurrent turns, preserves actor and workspace identity across worker restart or relocation,
-  and never runs OpenCode inside the general Celld worker authority by default.
+- A real public `codeAgent()` runs through the pinned local/worktree OpenCode provider rather than a
+  protocol double, while preserving stable run/workspace identity and fenced repository writes.
+- The exact OpenCode package version is frozen in release evidence; no floating development tag
+  participates in a reproducible v0.9 build.
 - The preview explicitly scopes shell, filesystem, repository, network, Secret, and Git authority;
-  cancellation and ordered teardown leave no actor, process, lease, workspace, volume, or authorization
-  residue.
-- OpenCode-provider replacement preserves conversation/workspace identity and is demonstrated explicitly;
-  it cannot be inferred from protocol compatibility.
+  cancellation and ordered teardown leave no process, lease, workspace, volume, or authorization residue.
+- OpenCode process replacement preserves run/workspace identity and is demonstrated explicitly; this
+  cannot be inferred from protocol compatibility.
 - Builder's loopback OpenCode mode is qualified separately and remains functional when Celld and the
   generated application are absent.
 - Approval and event behavior use the same framework contracts as other applications.
 - Agentic Start demonstrates both the research journey and code journey end to end, with the code journey
   clearly labeled preview maturity.
-- Research-vertical, code-agent, or Builder qualification failure blocks v0.9.
+- Research-vertical, local code-agent, or Builder qualification failure blocks v0.9. The deferred
+  Celld/OpenCode provider does not.
 
 ## Non-goals
 
@@ -435,5 +403,5 @@ consumer value.
 The research vertical is complete when it feels batteries-included in Agentic Start, passes its managed
 and external provider lifecycle gates, and its expanded graph proves that every behavior is ordinary
 Applik8s composition with replaceable providers and explicit authority. The code vertical may ship as a
-credible preview only after the complete real-OpenCode local/Celld evidence above; otherwise v0.9 is not
-ready.
+credible preview after the complete local/worktree OpenCode evidence above. Distributed Celld/OpenCode
+qualification remains explicitly blocked and deferred rather than being represented by a protocol double.

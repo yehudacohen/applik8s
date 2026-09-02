@@ -8,7 +8,7 @@ import type {
 import { codeAgentProviderRuntime } from './runtime-contract.js';
 
 export * from './contracts.js';
-export * from './code-agent.js';
+export * from './code-agent-definition.js';
 export * from './local.js';
 
 export const AgentHarness = defineApplicationProvider<ApplicationAgentHarnessProvider>({

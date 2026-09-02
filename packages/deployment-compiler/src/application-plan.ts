@@ -735,6 +735,7 @@ function executionScalingBoundary(node: ApplicationGraphNode): 'singleton' | 're
     || node.kind === 'schedule'
     || node.kind === 'lakehousePublication'
     || node.kind === 'actor'
+    || node.kind === 'codeAgent'
   ) return 'provider-managed';
   if (node.kind === 'operator' || node.kind === 'workloadJob') return 'singleton';
   return 'unknown';
@@ -758,6 +759,12 @@ function stateContract(node: ApplicationGraphNode): { readonly authority: string
     : { authority: node.runtime.interface, consistency: 'single-terminal-transition', retention: 'profile-defined', recovery: 'provider-attempt-retry' };
   if (node.kind === 'lakehousePublication') return { authority: node.dataset.interface, consistency: node.semantics.publication, retention: 'immutable-snapshots', recovery: 'frontier-replay-and-manifest-republish' };
   if (node.kind === 'actor') return { authority: node.runtime.interface, consistency: node.semantics.serialization, retention: 'provider-defined', recovery: 'admission-receipt-state-and-outbox' };
+  if (node.kind === 'codeAgent') return {
+    authority: node.harness.interface,
+    consistency: 'repository-scoped-serialized-runs',
+    retention: node.definition.workspace.disposition,
+    recovery: 'provider-session-receipt-and-fenced-workspace',
+  };
   if (node.kind === 'aggregate' || node.kind === 'counter') return { authority: 'provider-defined', consistency: 'atomic', recovery: 'source-rebuild' };
   return undefined;
 }

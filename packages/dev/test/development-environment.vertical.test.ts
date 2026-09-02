@@ -199,6 +199,10 @@ describe('independent development environment', () => {
     expect(html).toContain('What outcome do you want?');
     expect(html).toContain('Approve exact scopes');
     expect(html).toContain('applik8s dev --agent');
+    expect(html).toContain('aria-label="Builder workflow"');
+    for (const surface of ['Conversation', 'Plan', 'Changes', 'Preview', 'Evidence']) {
+      expect(html).toContain(`>${surface}</a>`);
+    }
   });
 
   it.skipIf(process.env.APPLIK8S_DEV_LIVE !== '1')('keeps health and recovery state available independently of an application failure', async () => {

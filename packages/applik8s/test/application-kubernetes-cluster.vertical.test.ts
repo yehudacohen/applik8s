@@ -14,6 +14,7 @@ import {
   sdk,
   secret,
 } from '@applik8s/applik8s';
+import { installApplicationKubernetesCapabilityWitHost } from '../src/kubernetes-cluster-wit-runtime.js';
 import { describe, expect, it } from 'vitest';
 import { type } from '@applik8s/applik8s/dsl';
 
@@ -212,6 +213,47 @@ describe('application Kubernetes cluster capability', () => {
       authorityReceipt: '',
       causalContext: 'principal:user-1',
     })).toThrow('authority receipt');
+  });
+
+  it('hydrates the component WIT transport into the same validated capability host contract', async () => {
+    const requests: ApplicationKubernetesCapabilityIntent[] = [];
+    const dispose = installApplicationKubernetesCapabilityWitHost(requestJson => {
+      const request = JSON.parse(requestJson) as ApplicationKubernetesCapabilityIntent;
+      requests.push(request);
+      return {
+        tag: 'ok',
+        val: JSON.stringify({
+          ok: true,
+          value: ok(deployment(request.operation.kind === 'get' ? request.operation.identity.name : 'unexpected')),
+        }),
+      };
+    });
+    try {
+      await expect(KubernetesCluster.named('component').resources(Deployment).get({
+        namespace: 'apps',
+        name: 'component-api',
+      })).resolves.toMatchObject({ metadata: { name: 'component-api' } });
+    } finally {
+      dispose();
+    }
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      protocol: applicationKubernetesCapabilityProtocol,
+      bindingId: 'provider.kubernetes-cluster.v1alpha1.component',
+      operation: { kind: 'get' },
+    });
+
+    const disposeMalformed = installApplicationKubernetesCapabilityWitHost(() => ({
+      ok: true,
+      value: JSON.stringify({ ok: true, value: { protocol: applicationKubernetesCapabilityProtocol, ok: false, error: { code: 'UNKNOWN', message: 'bad', retryable: false } } }),
+    }));
+    try {
+      await expect(KubernetesCluster.named('component').resources(Deployment).get({
+        namespace: 'apps', name: 'component-api',
+      })).rejects.toMatchObject({ code: 'KUBERNETES_CLUSTER_PROTOCOL_INCOMPATIBLE' });
+    } finally {
+      disposeMalformed();
+    }
   });
 });
 

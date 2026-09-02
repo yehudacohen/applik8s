@@ -1,0 +1,17 @@
+---
+title: Models, queries, and views
+description: Declare domain state once and use the same typed handle for writes, reads, and lifecycle behavior.
+---
+
+```ts
+export const Entry = application.model(entries, { database: Database });
+
+export const RecentEntries = Entry.query(
+  { input: type({ limit: 'number' }), output: Entry.schema.array() },
+  (input, context) => context.database.select().from(Entry).limit(input.limit),
+);
+```
+
+`Entry.create(...)` is an admitted mutation. `RecentEntries(...)` is a bounded one-time query. A view is
+appropriate when the result must be persisted, invalidated, subscribed to, or rebuilt. Model callbacks
+receive the same domain types and authority context regardless of the maintained database implementation.

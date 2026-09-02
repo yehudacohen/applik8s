@@ -113,7 +113,7 @@ export class OpenCodeHarnessProvider implements ApplicationAgentHarnessProvider 
     return result;
   }
 
-  async cancel(input: { readonly runId: string; readonly fencingToken: string }) {
+  async cancel(input: { readonly runId: string; readonly fencingToken: string; readonly workspace: string }) {
     const session = this.#sessions.get(input.runId);
     const terminal = this.#terminal.get(input.runId);
     if (terminal) {

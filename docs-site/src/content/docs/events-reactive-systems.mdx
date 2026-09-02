@@ -1,0 +1,14 @@
+---
+title: Events and reactive systems
+description: React to committed facts without turning delivery machinery into application vocabulary.
+---
+
+```ts
+Entry.on.create(async created => {
+  await Notifications.send({ message: created.value.message });
+});
+```
+
+Handlers acknowledge only after their declared effects and checkpoint are durable. Projections use the same
+callback-native shape with `output.upsert`, `output.append`, or `output.remove`; rebuilds must declare whether
+current authoritative state can reconstruct the live logical source or whether event replay is required.

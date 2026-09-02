@@ -44,6 +44,7 @@ const dns1123 = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const sha256 = /^sha256:[a-f0-9]{64}$/;
 const celldVersion = /^v[0-9]+\.[0-9]+\.[0-9]+$/;
 const immutableImage = /^(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/-]*(?::[a-zA-Z0-9._-]+)?@sha256:[a-f0-9]{64})$/;
+const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const CelldObjectStoreCredentialsSchema = type({
   type: "'secret' | 'workloadIdentity'",
@@ -77,6 +78,13 @@ export const CelldFleetSpecSchema = type({
   runtimeSecretRef: {
     name: dns1123,
     contract: "'applik8s.celld-runtime/v1'",
+  },
+  'runtime?': {
+    'environment?': type({ name: environmentName, value: 'string' }).array(),
+    'secretEnvironment?': type({
+      name: environmentName,
+      secretRef: { name: dns1123, key: 'string > 0' },
+    }).array(),
   },
   applicationEndpoint: 'string > 0',
   'ingressNamespaces?': 'string[]',
@@ -170,6 +178,43 @@ export const celldFleetSpecOpenApiSchema = {
       },
     },
     runtimeSecretRef: { type: 'object', required: ['name', 'contract'], properties: { name: dns1123OpenApiString, contract: { type: 'string', enum: ['applik8s.celld-runtime/v1'] } } },
+    runtime: {
+      type: 'object',
+      properties: {
+        environment: {
+          type: 'array',
+          maxItems: 128,
+          items: {
+            type: 'object',
+            required: ['name', 'value'],
+            properties: {
+              name: { type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*$' },
+              value: { type: 'string' },
+            },
+          },
+        },
+        secretEnvironment: {
+          type: 'array',
+          maxItems: 128,
+          items: {
+            type: 'object',
+            required: ['name', 'secretRef'],
+            properties: {
+              name: { type: 'string', pattern: '^[A-Za-z_][A-Za-z0-9_]*$' },
+              secretRef: {
+                type: 'object',
+                required: ['name', 'key'],
+                properties: { name: dns1123OpenApiString, key: nonemptyOpenApiString },
+              },
+            },
+          },
+        },
+      },
+      xKubernetesValidations: [{
+        rule: '!has(self.environment) || !has(self.secretEnvironment) || self.environment.all(value, !self.secretEnvironment.exists(secret, secret.name == value.name))',
+        message: 'runtime environment names must have exactly one public or Secret-backed source',
+      }],
+    },
     applicationEndpoint: nonemptyOpenApiString,
     ingressNamespaces: { type: 'array', items: nonemptyOpenApiString },
     rollout: { type: 'object', required: ['strategy', 'progressDeadlineSeconds', 'drainDeadlineSeconds', 'restoreDeadlineSeconds'], properties: { strategy: { type: 'string', enum: ['Rolling', 'Recreate'] }, progressDeadlineSeconds: { type: 'integer', minimum: 30, maximum: 86400 }, drainDeadlineSeconds: { type: 'integer', minimum: 30, maximum: 86400 }, restoreDeadlineSeconds: { type: 'integer', minimum: 30, maximum: 86400 } } },

@@ -32,10 +32,30 @@ const requiredPages = {
     'explicit migration before 1.0',
   ],
   'docs-site/src/content/docs/understand/journeys.mdx': [
-    "journey('guestbook/create-entry'",
+    "context.browser()",
+    "browser.expectText(",
     '`blocked`, never',
     'fails closed and is discarded',
   ],
+  'docs-site/src/content/docs/build-applications/decision-guide.mdx': [
+    'Choose the right primitive',
+    '`Model.create/update/delete`',
+    '`workflow(...)`',
+  ],
+  'docs-site/src/content/docs/build-applications/models-queries-views.mdx': [
+    'Models, queries, and views',
+    '`Entry.create(...)`',
+    'bounded one-time query',
+  ],
+  'docs-site/src/content/docs/events-reactive-systems.mdx': ['Events and reactive systems', 'output.upsert'],
+  'docs-site/src/content/docs/distributed-behavior.mdx': ['Jobs, workflows, Sagas, and actors', 'Schedules select an execution family'],
+  'docs-site/src/content/docs/data-analytics.mdx': ['Transactional, streaming, and analytical data', 'Cross-store work'],
+  'docs-site/src/content/docs/ai-agents.mdx': ['Agents with evidence and authority', 'causal principal lineage'],
+  'docs-site/src/content/docs/security.mdx': ['Identity, authority, and secrets', 'Clients provide application input'],
+  'docs-site/src/content/docs/infrastructure-providers.mdx': ['TypeKro authors Kubernetes resources', 'External bindings contribute no infrastructure'],
+  'docs-site/src/content/docs/infrastructure-providers/provider-guarantees.mdx': ['Compare provider guarantees', 'does not upgrade maturity'],
+  'docs-site/src/content/docs/understand/troubleshooting.mdx': ['V09_BASELINE_RELEASE_UNAVAILABLE', 'JOURNEY_PROVIDER_INCOMPATIBLE'],
+  'docs-site/src/content/docs/examples-starts.mdx': ['GuestBook', 'Chirp', 'Agentic Start'],
   'docs-site/src/content/docs/reference/public-contracts.mdx': [
     'v0.9-public-contract.json',
     'does not upgrade',
@@ -70,6 +90,9 @@ for (const expected of [
   "slug: 'build-applications/operations-and-effects'",
   "slug: 'build-applications/profiles-and-providers'",
   "slug: 'upgrade/v08-to-v09'",
+  "slug: 'build-applications/decision-guide'",
+  "slug: 'distributed-behavior'",
+  "slug: 'infrastructure-providers/provider-guarantees'",
 ]) {
   if (!config.includes(expected)) {
     findings.push(`V09_DOCUMENTATION_SITE_INVALID: Astro configuration must contain ${JSON.stringify(expected)}.`);

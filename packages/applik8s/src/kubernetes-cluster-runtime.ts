@@ -106,19 +106,24 @@ export class ApplicationKubernetesCapabilityError extends Error {
   }
 }
 
-type ApplicationKubernetesCapabilityHostResolver = (
+export type ApplicationKubernetesCapabilityHostResolver = (
   bindingId: string,
 ) => ApplicationKubernetesCapabilityHost | Promise<ApplicationKubernetesCapabilityHost | undefined> | undefined;
 
-let hostResolver: ApplicationKubernetesCapabilityHostResolver | undefined;
+const applicationKubernetesCapabilityHostResolverSymbol = Symbol.for(
+  'applik8s.kubernetes-capability.host-resolver.v1alpha1',
+);
 
 /** Host integration seam. Credentials and Kubernetes clients remain behind this resolver. */
 export function installApplicationKubernetesCapabilityHostResolver(
   resolver: ApplicationKubernetesCapabilityHostResolver,
 ): () => void {
-  const previous = hostResolver;
-  hostResolver = resolver;
-  return () => { hostResolver = previous; };
+  const previous = Reflect.get(globalThis, applicationKubernetesCapabilityHostResolverSymbol) as ApplicationKubernetesCapabilityHostResolver | undefined;
+  Reflect.set(globalThis, applicationKubernetesCapabilityHostResolverSymbol, resolver);
+  return () => {
+    if (previous) Reflect.set(globalThis, applicationKubernetesCapabilityHostResolverSymbol, previous);
+    else Reflect.deleteProperty(globalThis, applicationKubernetesCapabilityHostResolverSymbol);
+  };
 }
 
 /**
@@ -287,7 +292,8 @@ async function invokeAtDeadline(
   operation: ApplicationKubernetesCapabilityOperation,
   deadlineUnixMs: number,
 ): Promise<JsonValue> {
-  const host = await hostResolver?.(bindingId);
+  const resolver = Reflect.get(globalThis, applicationKubernetesCapabilityHostResolverSymbol) as ApplicationKubernetesCapabilityHostResolver | undefined;
+  const host = await resolver?.(bindingId);
   if (!host) {
     throw new ApplicationKubernetesCapabilityError('KUBERNETES_CLUSTER_BINDING_MISSING', `Kubernetes cluster binding ${bindingId} has no host adapter.`, false);
   }

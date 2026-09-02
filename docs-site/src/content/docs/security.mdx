@@ -1,0 +1,9 @@
+---
+title: Identity, authority, and secrets
+description: Derive principals at admission, explain decisions, and keep credentials behind provider boundaries.
+---
+
+Clients provide application input, never trusted actor identity. Admission derives the principal, causal
+lineage, authority catalog version, and receipt. Provider-private dependencies do not grant application
+callbacks access to their credentials. `secret.env(...)` and Secret references preserve provenance in plans
+without reading or serializing values during graph construction.

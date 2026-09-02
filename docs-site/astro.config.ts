@@ -27,8 +27,22 @@ export default defineConfig({
         {
           label: 'Build Applications',
           items: [
+            { label: 'Choose a primitive', slug: 'build-applications/decision-guide' },
+            { label: 'Models, queries, and views', slug: 'build-applications/models-queries-views' },
             { label: 'Profiles and providers', slug: 'build-applications/profiles-and-providers' },
             { label: 'Operations and effect safety', slug: 'build-applications/operations-and-effects' },
+          ],
+        },
+        { label: 'Events & Reactive Systems', items: [{ label: 'Events and projections', slug: 'events-reactive-systems' }] },
+        { label: 'Distributed Behavior', items: [{ label: 'Jobs, workflows, Sagas, and actors', slug: 'distributed-behavior' }] },
+        { label: 'Data & Analytics', items: [{ label: 'Transactional, streaming, and analytical data', slug: 'data-analytics' }] },
+        { label: 'AI & Agents', items: [{ label: 'Agents with evidence and authority', slug: 'ai-agents' }] },
+        { label: 'Security', items: [{ label: 'Identity, authority, and secrets', slug: 'security' }] },
+        {
+          label: 'Infrastructure & Providers',
+          items: [
+            { label: 'Provider boundary', slug: 'infrastructure-providers' },
+            { label: 'Compare guarantees', slug: 'infrastructure-providers/provider-guarantees' },
           ],
         },
         {
@@ -36,8 +50,10 @@ export default defineConfig({
           items: [
             { label: 'Read a deployment plan', slug: 'understand/implementation-plans' },
             { label: 'Test a user journey', slug: 'understand/journeys' },
+            { label: 'Diagnose a failure', slug: 'understand/troubleshooting' },
           ],
         },
+        { label: 'Examples & Starts', items: [{ label: 'GuestBook, Chirp, and Agentic Start', slug: 'examples-starts' }] },
         {
           label: 'Reference',
           items: [{ label: 'Public contract inventory', slug: 'reference/public-contracts' }],

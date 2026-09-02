@@ -139,6 +139,7 @@
       "@applik8s/applik8s/actor-runtime-local": ["packages/applik8s/src/application-actor-local-runtime.ts"],
       "@applik8s/applik8s/actor-authority-runtime": ["packages/applik8s/src/application-actor-authority-runtime.ts"],
       "@applik8s/applik8s/internal/managed-effects": ["packages/applik8s/src/application-managed-effects.ts"],
+      "@applik8s/applik8s/internal/application-graph-extension": ["packages/applik8s/src/application-graph-extension.ts"],
       "@applik8s/client": ["packages/client/src/index.ts"],
       "@applik8s/react": ["packages/react/src/index.ts"],
       "@applik8s/react/identity": ["packages/react/src/identity.ts"],

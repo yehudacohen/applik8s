@@ -1,6 +1,9 @@
 // typecast-file-boundary: browser acceptance narrows the framework query
 // response only after the live generated application returns JSON.
-import { expect, test } from '@playwright/test';
+import { pathToFileURL } from 'node:url';
+import AxeBuilder from '@axe-core/playwright';
+import { defineJourneyAdapter, runJourney, type JourneyBrowserTarget } from '@applik8s/testing';
+import { expect, test, type Page } from '@playwright/test';
 import { agenticProductEvidenceJourneys } from './agentic-product-evidence-contract.js';
 
 test.describe.configure({ mode: 'serial' });
@@ -19,6 +22,73 @@ interface BrowserDocument {
   readonly createdByPrincipalId: string;
   readonly sourceConversationId?: string;
   readonly sourceRunId?: string;
+}
+
+test('executes the generated source-owned document journey through the browser adapter', async ({ page }) => {
+  const sourceRoot = process.env.APPLIK8S_AGENTIC_PRODUCT_SOURCE_ROOT;
+  if (!sourceRoot) throw new Error('The generated Agentic Start source root is required for source-owned journey qualification.');
+  const module = await import(pathToFileURL(`${sourceRoot}/src/journeys.ts`).href) as {
+    readonly applicationJourneys?: readonly import('@applik8s/testing').JourneyDefinition[];
+  };
+  const definition = module.applicationJourneys?.[0];
+  if (!definition) throw new Error('The generated Agentic Start did not export its source-owned application journey.');
+  const adapter = defineJourneyAdapter({
+    mode: 'browser' as const,
+    boundary: 'public-admission' as const,
+    supports: (requirement: import('@applik8s/testing').JourneyRequirement) => requirement === 'browser',
+    begin: async (_definition, options) => ({
+      isolation: {
+        id: `agentic-product-browser-lease:${options.runId}`,
+        scope: `agentic-product-browser/${options.runId}`,
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+        orphanPolicy: 'retain-with-remediation' as const,
+      },
+      providerReceipts: [], physicalResourceReceipts: [], evidence: [],
+    }),
+    runAs: async <T>(_identity: import('@applik8s/testing').JourneyIdentityFixture, closure: () => T | Promise<T>) => closure(),
+    describeOwnedResource: () => ({ id: 'generated-product', kind: 'deployment', scope: 'agentic-product-browser', summary: 'generated product deployment' }),
+    verifyCleanupAuthority: async () => true,
+    browser: playwrightJourneyBrowser(page),
+  });
+  const result = await runJourney(definition, adapter, {
+    application: 'agentic-product-evidence',
+    mode: 'browser',
+    runId: `browser-${Date.now()}`,
+    fixtureSeed: `fixture-${Date.now()}`,
+    sourceRevision: 'generated-consumer',
+    sourceDigest: `sha256:${'9'.repeat(64)}`,
+    profile: qualificationProfile,
+    timeoutMs: 120_000,
+  });
+  expect(result.status, JSON.stringify(result, null, 2)).toBe('passed');
+  expect(result.assertions.length).toBeGreaterThanOrEqual(2);
+});
+
+function playwrightJourneyBrowser(page: Page): import('@applik8s/testing').JourneyBrowserAdapter {
+  const locator = (target: JourneyBrowserTarget) => {
+    switch (target.by) {
+      case 'role': return page.getByRole(target.role as never, target.name ? { name: target.name } : {});
+      case 'label': return page.getByLabel(target.value);
+      case 'text': return page.getByText(target.value, { exact: false });
+      case 'testId': return page.getByTestId(target.value);
+      case 'placeholder': return page.getByPlaceholder(target.value);
+    }
+  };
+  return {
+    goto: async path => { await page.goto(path, { waitUntil: 'domcontentloaded' }); },
+    click: async target => { await locator(target).click(); },
+    fill: async (target, value) => { await locator(target).fill(value); },
+    visible: async target => locator(target).isVisible(),
+    text: async target => locator(target).first().innerText(),
+    accessibility: async () => (await new AxeBuilder({ page }).analyze()).violations.map(violation => ({
+      rule: violation.id,
+      impact: violation.impact === 'minor' || violation.impact === 'moderate' || violation.impact === 'serious' || violation.impact === 'critical'
+        ? violation.impact
+        : 'moderate',
+      target: violation.nodes[0]?.target.join(' ') ?? 'document',
+      summary: violation.help,
+    })),
+  };
 }
 
 async function readAuthoritativeDocuments(

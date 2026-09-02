@@ -1,0 +1,9 @@
+---
+title: Transactional, streaming, and analytical data
+description: Keep one domain vocabulary while selecting stores according to workload guarantees.
+---
+
+Applik8s distinguishes transactional authority, event logs, projections/indexes, object storage, analytical
+models, and lakehouse datasets. A model or query remains the application-facing handle; profiles select
+PostgreSQL, Kubernetes, ClickHouse, DuckDB, S3, or another qualified implementation. Cross-store work must
+declare consistency, replay, batching, retention, and deletion semantics rather than assuming one transaction.

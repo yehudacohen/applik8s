@@ -58,6 +58,7 @@ const executionNodeKinds = new Set<ApplicationGraphNodeKind>([
   'schedule',
   'lakehousePublication',
   'actor',
+  'codeAgent',
 ]);
 
 /**
@@ -433,6 +434,16 @@ function addNodeSpecificRequirements(
     add(node, 'model.write', node.state.nodeId, resourceScope(node.state), 'framework');
     for (const operation of node.operations ?? []) add(node, 'model.write', operation.command.nodeId, resourceScope(operation.command));
     for (const query of node.queries ?? []) add(node, 'model.read', query.query.nodeId, resourceScope(query.query));
+    return;
+  }
+  if (node.kind === 'codeAgent') {
+    add(node, 'connection.use', node.harness.nodeId, resourceScope(node.harness), 'framework');
+    add(node, 'filesystem.read', node.workspace.nodeId, resourceScope(node.workspace));
+    add(node, 'filesystem.write', node.workspace.nodeId, resourceScope(node.workspace));
+    add(node, 'repository.read', node.source.nodeId, resourceScope(node.source));
+    add(node, 'repository.write', node.source.nodeId, resourceScope(node.source));
+    add(node, 'process.execute', node.process.nodeId, resourceScope(node.process));
+    add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
   if (node.kind === 'query') {

@@ -241,6 +241,11 @@
       "import": "./dist/kubernetes-cluster-runtime.js",
       "default": "./dist/kubernetes-cluster-runtime.js"
     },
+    "./kubernetes-cluster-wit-runtime": {
+      "types": "./dist/kubernetes-cluster-wit-runtime.d.ts",
+      "import": "./dist/kubernetes-cluster-wit-runtime.js",
+      "default": "./dist/kubernetes-cluster-wit-runtime.js"
+    },
     "./schedule-runtime-local": {
       "types": "./dist/application-schedule-local-runtime.d.ts",
       "import": "./dist/application-schedule-local-runtime.js",
@@ -290,6 +295,11 @@
       "types": "./dist/application-provider-runtime.d.ts",
       "import": "./dist/application-provider-runtime.js",
       "default": "./dist/application-provider-runtime.js"
+    },
+    "./internal/application-graph-extension": {
+      "types": "./dist/application-graph-extension.d.ts",
+      "import": "./dist/application-graph-extension.js",
+      "default": "./dist/application-graph-extension.js"
     },
     "./internal/historical-model-commands": {
       "types": "./dist/historical-model-commands.d.ts",

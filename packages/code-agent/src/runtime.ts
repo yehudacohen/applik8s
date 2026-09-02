@@ -1,5 +1,6 @@
 import type {
   ApplicationAgentHarnessProvider,
+  ApplicationAgentHarnessCancellationRequest,
   ApplicationAgentHarnessRequest,
   ApplicationCodeWorkspaceLeaseRequest,
   ApplicationCodeWorkspaceProvider,
@@ -38,7 +39,7 @@ export function runApplicationAgentHarness(input: ApplicationAgentHarnessRequest
   return providers().harness.run(input);
 }
 
-export function cancelApplicationAgentHarness(input: { readonly runId: string; readonly fencingToken: string }) {
+export function cancelApplicationAgentHarness(input: ApplicationAgentHarnessCancellationRequest) {
   return providers().harness.cancel(input);
 }
 

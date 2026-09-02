@@ -187,7 +187,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
     // Compatibility ceiling retained by the Start definition schema. Release
     // review uses the categorized source-ownership inventory below rather than
     // treating one aggregate count as a quality target.
-    maximumApplicationFiles: 123,
+    maximumApplicationFiles: 124,
     maximumIntegrationLines: 600,
     files: [
       '.applik8s-start.json',
@@ -272,6 +272,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/workspaces/view.tsx',
       'src/installation.ts',
       'src/inference-roles.ts',
+      'src/journeys.ts',
       'src/modules.ts',
       'src/providers.ts',
       'src/workspace-scope.ts',

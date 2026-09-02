@@ -20,7 +20,7 @@
     { "id": "ml-models", "maturity": "beta", "rfp": "rfp-v09-ml-models.md", "acceptance": ["ml-models"] },
     { "id": "explainable-decisions", "maturity": "library", "rfp": "rfp-v09-explainable-decisions.md", "acceptance": ["explainable-decisions"] },
     { "id": "research-agent", "maturity": "stable-candidate", "rfp": "rfp-v09-specialized-agents.md", "acceptance": ["research-agent-managed", "research-agent-external"] },
-    { "id": "code-agent", "maturity": "release-blocking-preview", "rfp": "rfp-v09-specialized-agents.md", "acceptance": ["code-agent-local", "code-agent-celld"] },
+    { "id": "code-agent", "maturity": "release-blocking-preview", "rfp": "rfp-v09-specialized-agents.md", "acceptance": ["code-agent-local"] },
     { "id": "builder", "maturity": "release-blocking-preview", "rfp": "rfp-v09-builder-development-environment.md", "acceptance": ["builder-opencode"] },
     { "id": "journeys", "maturity": "stable-candidate", "rfp": "rfp-v09-journeys.md", "acceptance": ["agentic-start-browser"] },
     { "id": "documentation", "maturity": "stable-candidate", "rfp": "rfp-v09-documentation-and-product-legibility.md", "acceptance": ["documentation"] }

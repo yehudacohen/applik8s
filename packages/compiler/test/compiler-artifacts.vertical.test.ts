@@ -1988,7 +1988,10 @@ export const imagePipeline = sdk.operator({
       const dispatcherTestPath = join(dir, 'dist/bundle/handler-dispatcher.node-test.ts');
       const dispatcherSource = await readFile(dispatcherPath, 'utf8');
       expect(dispatcherSource).toContain("import { kubernetesRead } from 'applik8s:handler/kubernetes';");
-      await writeFile(dispatcherTestPath, dispatcherSource.replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n"));
+      expect(dispatcherSource).toContain('installApplicationKubernetesCapabilityWitHost(kubernetesRead);');
+      await writeFile(dispatcherTestPath, dispatcherSource
+        .replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n")
+        .replace("import { installApplicationKubernetesCapabilityWitHost } from '@applik8s/applik8s/kubernetes-cluster-wit-runtime';\n", "const installApplicationKubernetesCapabilityWitHost = () => () => {};\n"));
       // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
       const dispatcher = await import(`${pathToFileURL(dispatcherTestPath).href}?case=handler-error`);
       await expect(dispatcher.handle(JSON.stringify({
@@ -2040,7 +2043,9 @@ export const operator = sdk.operator({ name: 'nested-status', resources: { Volum
       const dispatcherPath = join(dir, 'dist/bundle/handler-dispatcher.generated.ts');
       const dispatcherTestPath = join(dir, 'dist/bundle/handler-dispatcher.node-test.ts');
       const dispatcherSource = await readFile(dispatcherPath, 'utf8');
-      await writeFile(dispatcherTestPath, dispatcherSource.replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n"));
+      await writeFile(dispatcherTestPath, dispatcherSource
+        .replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n")
+        .replace("import { installApplicationKubernetesCapabilityWitHost } from '@applik8s/applik8s/kubernetes-cluster-wit-runtime';\n", "const installApplicationKubernetesCapabilityWitHost = () => () => {};\n"));
       // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
       const dispatcher = await import(`${pathToFileURL(dispatcherTestPath).href}?case=nested-status`);
       const output = JSON.parse(await dispatcher.handle(JSON.stringify({

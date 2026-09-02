@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OpenCodeAgentProvider } from '@applik8s/dev/agent/opencode';
 import { createDevelopmentDaemon } from '@applik8s/dev';
+import { chromium, type Browser } from '@playwright/test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const enabled = process.env.APPLIK8S_E2E_OPENCODE === '1';
@@ -146,6 +147,7 @@ describe.skipIf(!enabled)('v0.9 real OpenCode Builder qualification', () => {
       }),
     });
     await daemon.start();
+    let browser: Browser | undefined;
     const headers = {
       authorization: `Bearer ${daemon.sessionToken}`,
       origin: daemon.origin,
@@ -154,6 +156,14 @@ describe.skipIf(!enabled)('v0.9 real OpenCode Builder qualification', () => {
     };
     let sessionId = '';
     try {
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(daemon.origin, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('link', { name: 'Builder', exact: true }).click();
+      await page.getByRole('navigation', { name: 'Builder workflow' }).waitFor();
+      expect(await page.getByRole('navigation', { name: 'Builder workflow' }).allTextContents()).toEqual([
+        expect.stringMatching(/Conversation.*Plan.*Changes.*Preview.*Evidence/su),
+      ]);
       const started = await fetch(`${daemon.origin}/v1/agent/sessions`, {
         method: 'POST', headers, body: JSON.stringify({ mode: 'reviewed-apply' }),
       }).then((response) => response.json()) as { readonly session: { readonly id: string } };
@@ -179,6 +189,13 @@ describe.skipIf(!enabled)('v0.9 real OpenCode Builder qualification', () => {
       ]);
       expect(await readFile(join(workspace, 'app.ts'), 'utf8')).toBe(original);
 
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.getByRole('link', { name: 'Builder', exact: true }).click();
+      await page.getByText('Update the greeting through the reviewed Builder boundary', { exact: true }).waitFor();
+      for (const surface of ['PLAN', 'CHANGES', 'PREVIEW', 'EVIDENCE']) {
+        expect(await page.getByText(surface, { exact: true }).count()).toBeGreaterThan(0);
+      }
+
       const insufficient = await fetch(`${daemon.origin}/v1/plans/plan_builder_closed_loop/approve`, {
         method: 'POST', headers, body: JSON.stringify({ classes: [], principal: 'developer:qualification' }),
       });
@@ -188,6 +205,14 @@ describe.skipIf(!enabled)('v0.9 real OpenCode Builder qualification', () => {
       expect((await fetch(`${daemon.origin}/v1/plans/plan_builder_closed_loop/approve`, {
         method: 'POST', headers, body: JSON.stringify({ classes: ['source-mutation'], principal: 'developer:qualification' }),
       })).status).toBe(200);
+      await writeFile(join(workspace, 'app.ts'), `${original}// unrelated developer work\n`);
+      const dirtyApply = await fetch(`${daemon.origin}/v1/plans/plan_builder_closed_loop/apply`, {
+        method: 'POST', headers, body: '{}',
+      });
+      expect(dirtyApply.status).toBe(422);
+      expect(await dirtyApply.json()).toMatchObject({ message: expect.stringMatching(/was reviewed at .* but is now/u) });
+      expect(await readFile(join(workspace, 'app.ts'), 'utf8')).toContain('unrelated developer work');
+      await writeFile(join(workspace, 'app.ts'), original);
       const applied = await fetch(`${daemon.origin}/v1/plans/plan_builder_closed_loop/apply`, {
         method: 'POST', headers, body: '{}',
       });
@@ -206,6 +231,7 @@ describe.skipIf(!enabled)('v0.9 real OpenCode Builder qualification', () => {
         development: { plans: [expect.objectContaining({ id: 'plan_builder_closed_loop', applied: true })] },
       });
     } finally {
+      await browser?.close();
       await daemon.stop();
     }
 

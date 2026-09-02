@@ -16,6 +16,22 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+```ts title="src/guestbook.ts"
+const Entry = application.model(entries, { database: Database });
+
+Entry.on.create(async created => {
+  await Notifications.send({
+    topic: 'guestbook',
+    message: created.value.message,
+  });
+});
+
+application.profile('local', profile => {
+  profile.provide(Database, Database.postgres());
+  profile.provide(Notifications, Notifications.console());
+});
+```
+
 ## One application, explicit guarantees
 
 Write application semantics in ordinary typed code. Applik8s discovers the graph, resolves concrete
@@ -33,6 +49,17 @@ selected profile.
     Canonical plans expose implementation identity, private dependencies, authority, and lifecycle.
   </Card>
 </CardGrid>
+
+## Three proofs, one programming model
+
+<CardGrid>
+  <Card title="GuestBook" icon="pencil">The smallest complete model, event, UI, deployment, and source-owned journey.</Card>
+  <Card title="Chirp" icon="rocket">Streams, projections, media, analytics, automation, moderation, and portable production profiles.</Card>
+  <Card title="Agentic Start" icon="seti:ai">A generated agentic SaaS product with identity, billing, documents, reviews, evidence, and Builder.</Card>
+</CardGrid>
+
+The same semantic application source selects different maintained implementations through profiles. Read
+[the primitive decision guide](./build-applications/decision-guide/) or [compare provider guarantees](./infrastructure-providers/provider-guarantees/).
 
 > **v0.9 preview:** These pages document `0.9.0-alpha.1`. Deployment-state mutation remains disabled until
 > the exact released v0.8 migration baseline is available. Preview documentation never supersedes stable

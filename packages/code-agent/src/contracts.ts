@@ -1,6 +1,7 @@
 // typecast-file-boundary: Protocol constants and JSON transport contracts are
 // branded only after their public literal shape is declared in this module.
 import type { JsonObject } from '@applik8s/core';
+import type { ApplicationAIModelDefinition } from '@applik8s/ai';
 
 export const applicationCodeAgentProtocol = 'applik8s.codeAgent/v1alpha1' as const;
 
@@ -15,6 +16,14 @@ export interface ApplicationCodeWorkspaceLease {
   readonly baseRevision: string;
   readonly acquiredAt: string;
   readonly expiresAt: string;
+}
+
+/** Stable developer-facing workspace evidence; lease internals remain runtime-only. */
+export interface ApplicationCodeWorkspaceReference {
+  readonly apiVersion: 'applik8s.codeWorkspaceReference/v1alpha1';
+  readonly id: string;
+  readonly workspace: string;
+  readonly runId: string;
 }
 
 export interface ApplicationCodeWorkspaceLeaseRequest {
@@ -102,9 +111,24 @@ export interface ApplicationAgentHarnessRequest {
   readonly fencingToken: string;
   readonly workspace: ApplicationCodeWorkspaceLease;
   readonly instruction: string;
+  /** Logical model selection remains provider-neutral and plan-visible. */
+  readonly model: ApplicationAIModelDefinition;
   readonly source: ApplicationSourceRepositorySnapshot;
   readonly deadline: string;
   readonly grants: readonly string[];
+  /** Bounded process tools the harness may offer during this run. */
+  readonly processTools?: readonly {
+    readonly executable: string;
+    readonly arguments?: readonly string[];
+    readonly timeoutMs?: number;
+  }[];
+}
+
+export interface ApplicationAgentHarnessCancellationRequest {
+  readonly runId: string;
+  readonly fencingToken: string;
+  /** Stable durable-cell routing key. */
+  readonly workspace: string;
 }
 
 export interface ApplicationAgentHarnessResult {
@@ -123,17 +147,14 @@ export interface ApplicationAgentHarnessProvider {
   readonly kind: string;
   readonly mode: 'deterministic' | 'live';
   run(input: ApplicationAgentHarnessRequest): Promise<ApplicationAgentHarnessResult>;
-  cancel(input: {
-    readonly runId: string;
-    readonly fencingToken: string;
-  }): Promise<{ readonly status: 'cancelled' | 'alreadyTerminal' }>;
+  cancel(input: ApplicationAgentHarnessCancellationRequest): Promise<{ readonly status: 'cancelled' | 'alreadyTerminal' }>;
 }
 
 export type ApplicationCodeAgentResult =
   | {
       readonly status: 'completed';
       readonly runId: string;
-      readonly workspace: ApplicationCodeWorkspaceLease;
+      readonly workspace: ApplicationCodeWorkspaceReference;
       readonly revision: string;
       readonly summary: string;
       readonly harness: {
@@ -145,6 +166,6 @@ export type ApplicationCodeAgentResult =
   | {
       readonly status: 'failed' | 'cancelled';
       readonly runId: string;
-      readonly workspace?: ApplicationCodeWorkspaceLease;
+      readonly workspace?: ApplicationCodeWorkspaceReference;
       readonly reason: string;
     };

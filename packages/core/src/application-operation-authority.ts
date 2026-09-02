@@ -40,6 +40,8 @@ export type ApplicationOperationKind =
   | 'actor.connection'
   | 'actor.disconnection'
   | 'actor.alarm'
+  | 'agent.run'
+  | 'agent.cancel'
   | 'job.start'
   | 'job.cancel'
   | 'job.result'

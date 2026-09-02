@@ -1,0 +1,22 @@
+---
+title: Choose the right primitive
+description: Start from the behavior you need, not the infrastructure that implements it.
+---
+
+Use a **model** for authoritative domain state, a **query** for a bounded current answer, a **view** for a
+persisted live read model, an **event handler** for reaction, a **job** for finite durable work, a
+**workflow** for durable coordination, a **Saga** for compensating several effects, and an **actor** for
+addressable stateful concurrency.
+
+| Need | Primitive | Important guarantee |
+| --- | --- | --- |
+| Create or change domain state | `Model.create/update/delete` | admitted authoritative mutation |
+| Read a bounded answer now | `Model.query(...)` | budgets and authority |
+| Maintain a live projection | `Event.project(...)` | replay/rebuild contract |
+| Run bounded durable work | `job(...)` | terminal receipt and retry policy |
+| Wait, signal, or coordinate | `workflow(...)` | durable history |
+| Cross several effect boundaries | `saga(...)` | explicit compensation |
+| Address long-lived state | `actor(...)` | provider-qualified placement and recovery |
+
+If two rows seem plausible, choose the least durable primitive whose failure semantics satisfy the product.
+Use `applik8s explain` to see the selected implementation before deployment.

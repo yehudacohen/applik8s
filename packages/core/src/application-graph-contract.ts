@@ -91,6 +91,7 @@ export type ApplicationGraphNodeKind =
   | 'schedule'
   | 'lakehousePublication'
   | 'actor'
+  | 'codeAgent'
   | 'aiAgent'
   | 'mcpServer'
   | 'mcpClient'
@@ -135,6 +136,7 @@ export const applicationGraphNodeKinds = [
   'schedule',
   'lakehousePublication',
   'actor',
+  'codeAgent',
   'aiAgent',
   'mcpServer',
   'mcpClient',
@@ -303,6 +305,7 @@ export type ApplicationGraphNode =
   | ApplicationScheduleNode
   | ApplicationLakehousePublicationNode
   | ApplicationActorNode
+  | ApplicationCodeAgentNode
   | ApplicationAIAgentNode
   | ApplicationMcpServerNode
   | ApplicationMcpClientNode
@@ -1156,6 +1159,76 @@ export interface ApplicationActorNode extends ApplicationGraphNodeBase<'actor'> 
   /** Explicit entrypoint export boundary; absent actors remain server-only. */
   readonly publication?: {
     readonly boundary: 'entrypoint-export';
+  };
+}
+
+/**
+ * Provider-neutral coding-agent declaration. Placement and persistence belong
+ * to the selected AgentHarness provider; the graph retains stable run,
+ * repository, authority, and fencing semantics without naming a runtime.
+ */
+export interface ApplicationCodeAgentNode extends ApplicationGraphNodeBase<'codeAgent'> {
+  readonly definition: {
+    readonly id: string;
+    readonly serviceIdentity: ApplicationIdentityReference;
+    readonly invocation: {
+      readonly input: ApplicationMessageContractSchema;
+      readonly output: ApplicationMessageContractSchema;
+      /** Stable input field that selects the repository-scoped durable cell. */
+      readonly key: 'repositoryId';
+    };
+    readonly model: {
+      readonly apiVersion: 'applik8s.aiModel/v1alpha1';
+      readonly name: string;
+      readonly capabilities: readonly string[];
+      readonly constraints: {
+        readonly dataResidency?: readonly string[];
+        readonly complianceTags?: readonly string[];
+        readonly maximumInputCostPerMillion?: number;
+        readonly maximumOutputCostPerMillion?: number;
+        readonly minimumContextTokens?: number;
+        readonly minimumOutputTokens?: number;
+        readonly latencyClass?: 'interactive' | 'standard' | 'batch';
+        readonly availabilityClass?: 'standard' | 'high';
+        readonly allowedProviderClasses?: readonly string[];
+      };
+      readonly inference?: {
+        readonly qualification: {
+          readonly apiVersion: 'applik8s.providerQualification/v1alpha1';
+          readonly capability: string;
+          readonly name: string;
+          readonly compatibilityRevision: string;
+          readonly key: string;
+        };
+      };
+    };
+    readonly validation: readonly {
+      readonly executable: string;
+      readonly arguments?: readonly string[];
+      readonly timeoutMs?: number;
+    }[];
+    readonly workspace: {
+      readonly ttlMs: number;
+      readonly disposition: 'retain' | 'release';
+    };
+    readonly timeoutMs: number;
+  };
+  readonly harness: ApplicationProviderRef<'AgentHarness'>;
+  readonly workspace: ApplicationProviderRef<'CodeWorkspace'>;
+  readonly source: ApplicationProviderRef<'SourceRepository'>;
+  readonly process: ApplicationProviderRef<'ProcessRunner'>;
+  readonly operations: {
+    readonly run: ApplicationOperationId;
+    readonly cancel: ApplicationOperationId;
+    readonly transport: 'runtime';
+  };
+  readonly semantics: {
+    readonly placement: 'providerManaged';
+    readonly isolationKey: 'agentAndRepository';
+    readonly hostLifetime: 'providerManaged';
+    readonly admission: 'idempotentReceipt';
+    readonly fencing: 'workspaceLease';
+    readonly durability: 'providerManaged';
   };
 }
 
@@ -3895,6 +3968,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationLakehousePublicationNodeStructureDiagnostics(node);
     case 'actor':
       return applicationActorNodeStructureDiagnostics(node);
+    case 'codeAgent':
+      return applicationCodeAgentNodeStructureDiagnostics(node, graph);
     case 'aiAgent':
       return applicationAIAgentNodeStructureDiagnostics(node, graph);
     case 'mcpServer':
@@ -4392,6 +4467,85 @@ function applicationAIAgentNodeStructureDiagnostics(
     || node.deployment.maximumConcurrency < 1
     || node.deployment.gracefulShutdownSeconds < 1) {
     messages.push(`Application AI agent ${node.id} deployment bounds must be positive.`);
+  }
+  return messages.map(applicationGraphStructureDiagnostic);
+}
+
+function applicationCodeAgentNodeStructureDiagnostics(
+  node: ApplicationCodeAgentNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  const providers = [
+    node.harness,
+    node.workspace,
+    node.source,
+    node.process,
+  ] as const;
+  for (const providerRef of providers) {
+    const provider = graph.nodes.find((candidate) => candidate.id === providerRef.nodeId);
+    if (provider?.kind !== 'provider' || provider.interface !== providerRef.interface) {
+      messages.push(
+        `Application code agent ${node.id} requires ${providerRef.interface} provider ${providerRef.nodeId}.`,
+      );
+    }
+  }
+  const authority = graph.nodes.find((candidate) => candidate.kind === 'authorityManifest');
+  const identityDeclared = authority?.kind === 'authorityManifest'
+    && authority.manifest.identities.some(
+      (identity) => identity.id === node.definition.serviceIdentity.id,
+    );
+  if (!identityDeclared) {
+    messages.push(
+      `Application code agent ${node.id} service identity ${node.definition.serviceIdentity.id} is absent from the application authority manifest.`,
+    );
+  }
+  const staticallyGranted = authority?.kind === 'authorityManifest'
+    && authority.manifest.grants.some((grant) =>
+      grant.identity.id === node.definition.serviceIdentity.id
+      && grant.operationIds.includes(node.operations.run)
+      && grant.operationIds.includes(node.operations.cancel));
+  if (!staticallyGranted) {
+    messages.push(
+      `Application code agent ${node.id} run and cancellation operations require explicit service-identity grants.`,
+    );
+  }
+  if (node.definition.model.capabilities.length === 0) {
+    messages.push(`Application code agent ${node.id} model must declare at least one capability.`);
+  }
+  if (
+    !Number.isSafeInteger(node.definition.timeoutMs)
+    || node.definition.timeoutMs < 1_000
+    || node.definition.timeoutMs > 60 * 60_000
+  ) {
+    messages.push(`Application code agent ${node.id} timeout must be between one second and one hour.`);
+  }
+  if (
+    !Number.isSafeInteger(node.definition.workspace.ttlMs)
+    || node.definition.workspace.ttlMs < 1_000
+  ) {
+    messages.push(`Application code agent ${node.id} workspace lease must be at least one second.`);
+  }
+  for (const [index, command] of node.definition.validation.entries()) {
+    if (!command.executable.trim()) {
+      messages.push(`Application code agent ${node.id} validation ${index} requires an executable.`);
+    }
+    if (
+      command.timeoutMs !== undefined
+      && (!Number.isSafeInteger(command.timeoutMs) || command.timeoutMs < 1)
+    ) {
+      messages.push(`Application code agent ${node.id} validation ${index} timeout must be positive.`);
+    }
+  }
+  if (
+    node.semantics.placement !== 'providerManaged'
+    || node.semantics.isolationKey !== 'agentAndRepository'
+    || node.semantics.hostLifetime !== 'providerManaged'
+    || node.semantics.durability !== 'providerManaged'
+  ) {
+    messages.push(
+      `Application code agent ${node.id} must preserve provider-managed isolation and durability for each agent-and-repository identity.`,
+    );
   }
   return messages.map(applicationGraphStructureDiagnostic);
 }

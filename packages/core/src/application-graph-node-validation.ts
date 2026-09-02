@@ -174,6 +174,8 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
         node.runtime,
         ...(node.providerBindings ?? []).map(({ provider }) => provider),
       ];
+    case 'codeAgent':
+      return [node.harness, node.workspace, node.source, node.process];
     case 'aiAgent':
       return [
         node.inference,

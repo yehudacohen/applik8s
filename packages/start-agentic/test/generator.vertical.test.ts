@@ -527,6 +527,9 @@ describe('Agentic Start generator', () => {
       applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     );
     expect(progress).toEqual(['scaffold', 'templates', 'validation']);
+    expect(await readFile(join(target, 'src/journeys.ts'), 'utf8')).toContain(
+      "journey(\n  'agentic-start.create-document.v1'",
+    );
     const accountRoute = await readFile(
       join(target, 'src/routes/app.account.tsx'),
       'utf8',

@@ -1,0 +1,14 @@
+---
+title: Compare provider guarantees
+description: Read evidence-backed capability support before selecting an implementation.
+---
+
+| Capability | Local | Kubernetes | AWS |
+| --- | --- | --- | --- |
+| Transactional database | PostgreSQL, qualified | CNPG/PostgreSQL, qualified | Aurora PostgreSQL, qualification required by profile |
+| Event log | local/JetStream | JetStream, qualified | Kinesis, qualification required by profile |
+| Object storage | local/S3 protocol | Rook/Ceph S3, qualified | S3, resource-scoped lifecycle |
+| Finite jobs | local process | Kubernetes Job, qualified | ECS one-shot task, beta evidence |
+
+This page summarizes the generated provider catalog; it does not upgrade maturity. Consult the referenced
+plan/evidence for creation, update, drift, replacement, deletion, retained data, and recovery claims.

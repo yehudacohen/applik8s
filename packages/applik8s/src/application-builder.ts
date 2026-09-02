@@ -60,6 +60,11 @@ import type { ApplicationServerRuntimeIndex } from './application-generated-runt
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
 import {
+  applyApplicationGraphExtension,
+  bindApplicationGraphExtensionRegistrar,
+  registerApplicationGraphExtension,
+} from './application-graph-extension.js';
+import {
   type ApplicationHttpHandler,
   type ApplicationHttpOptions,
   type ApplicationHttpRegistrar,
@@ -3602,6 +3607,13 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     all: applicationGraphAll,
     interpolate: applicationGraphInterpolate,
   } satisfies KubernetesApplicationBuilder<TSpec, TStatus>;
+  bindApplicationGraphExtensionRegistrar(builder, (contribution) => {
+    applyApplicationGraphExtension(previewContext.state, contribution);
+    replays.push((scope) => {
+      registerApplicationGraphExtension(scope, contribution);
+    });
+    invalidate();
+  });
   Object.assign(builder.workflow, {
     signal<TInput extends object, TActions extends Readonly<Record<string, object>>>(
       id: string,
@@ -5546,6 +5558,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       );
     },
   } satisfies Pick<ApplicationWorkflowRegistrar, 'signal' | 'emitSignal'>);
+  bindApplicationGraphExtensionRegistrar(scope, (contribution) => {
+    applyApplicationGraphExtension(state, contribution);
+  });
   applicationStateByScope.set(scope, state);
   return {
     scope,

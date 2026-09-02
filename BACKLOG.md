@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-08-27
+Last updated: 2026-09-02
 
 - `[post-v0.7]` Add adapter-owned browser OAuth completion for provider-neutral
   Integration requests. Preserve the v0.7 safe intent/status model, keep
@@ -12,6 +12,15 @@ This backlog prioritizes correctness, excellence, and the public developer exper
 ## v0.9 Semantic completion and 1.0-readiness program
 
 Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
+
+- `[post-v0.9-blocked: CELLD_WORKERD_FILESYSTEM_DIRECTION]` Resume the parked
+  Celld/OpenCode distributed `AgentHarness` only after upstream Celld clarifies
+  whether its Workerd runtime will provide the filesystem/process semantics
+  OpenCode requires and whether the maintainers will accept a contribution.
+  Track the upstream discussion at
+  <https://github.com/denoland/celld/issues/180#issuecomment-5508529943>.
+  The exact experiment is preserved on `codex/v0.9-celld-opencode-parked`.
+  Do not ship a partial VFS, fork OpenCode, or make this a v0.9 release gate.
 
 - Added the first provider-neutral effect contract and receipt state machine,
   including stable logical identity, explicit provider guarantees, append-only

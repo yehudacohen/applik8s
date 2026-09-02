@@ -779,6 +779,7 @@ try {
     root,
     {
       APPLIK8S_AGENTIC_PRODUCT_BASE_URL: tunnel.url,
+      APPLIK8S_AGENTIC_PRODUCT_SOURCE_ROOT: target,
       APPLIK8S_AGENTIC_PRODUCT_PROFILE: developerProfile
         ? 'developer'
         : 'starter',

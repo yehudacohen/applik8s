@@ -34,6 +34,12 @@ export function applicationWorkloadProviderNodeIds(node: ApplicationGraphNode | 
       node.state.nodeId,
       ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),
     ];
+    case 'codeAgent': return [
+      node.harness.nodeId,
+      node.workspace.nodeId,
+      node.source.nodeId,
+      node.process.nodeId,
+    ];
     case 'query': return node.search ? [node.search.provider.nodeId] : [];
     case 'streamProcessor': return [
       ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),

@@ -22,6 +22,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/job-controller-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-job-controller-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/job-store': fileURLToPath(new URL('./packages/applik8s/src/application-job-store.ts', import.meta.url)),
     '@applik8s/applik8s/actor-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-actors.ts', import.meta.url)),
+    '@applik8s/applik8s/internal/application-graph-extension': fileURLToPath(new URL('./packages/applik8s/src/application-graph-extension.ts', import.meta.url)),
     '@applik8s/applik8s/lakehouse-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-lakehouse.ts', import.meta.url)),
     '@applik8s/applik8s/postgres-runtime-contract': fileURLToPath(new URL('./packages/applik8s/src/postgres-runtime-contract.ts', import.meta.url)),
     '@applik8s/applik8s/managed-model-postgres-runtime': fileURLToPath(new URL('./packages/applik8s/src/managed-model-postgres-runtime.ts', import.meta.url)),

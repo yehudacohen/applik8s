@@ -1,4 +1,4 @@
-// typecast-file-boundary: the composition test installs focused provider and actor runtimes after validating the public graph contracts.
+// typecast-file-boundary: the composition test installs focused provider runtimes after validating the public graph contracts.
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,10 +6,9 @@ import { join } from 'node:path';
 import {
   app,
   applicationGraphFor,
-  createDeterministicApplicationActorRuntime,
-  installApplicationActorRuntimeResolver,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import { AI } from '@applik8s/ai';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AgentHarness,
@@ -68,9 +67,10 @@ describe('provider-neutral codeAgent composition', () => {
     application.profile(application.installation.spec, 'profile')
       .provide(Processes).starter(() => processImplementation).external(() => processImplementation).exhaustive();
     const identity = application.serviceIdentity('product-builder');
+    const CodingModel = AI.model('coding', { capabilities: [AI.tools, AI.textInput, AI.textOutput] });
     const ProductBuilder = application.include(codeAgent('product-builder.v1', {
-      actor: { key: type('string') },
       identity,
+      model: CodingModel,
       harness: Harness,
       workspace: Workspace,
       source: Source,
@@ -81,7 +81,6 @@ describe('provider-neutral codeAgent composition', () => {
     expect(ProductBuilder.kind).toBe('applicationAgent');
     expect(ProductBuilder.specialization).toBe('code');
     expect(ProductBuilder.name).toBe('product-builder.v1');
-    expect(ProductBuilder.actorId).toMatch(/product-builder\.v1-run/u);
     expect(ProductBuilder.capabilities).toEqual({
       harness: Harness.qualification.key,
       workspace: Workspace.qualification.key,
@@ -92,10 +91,16 @@ describe('provider-neutral codeAgent composition', () => {
     expect(graph?.nodes.filter((node) => node.kind === 'provider').map((node) => node.interface)).toEqual(
       expect.arrayContaining(['AgentHarness', 'CodeWorkspace', 'SourceRepository', 'ProcessRunner']),
     );
-    expect(graph?.nodes).toContainEqual(expect.objectContaining({ kind: 'actor', name: 'product-builder.v1-run' }));
+    expect(graph?.nodes).toContainEqual(expect.objectContaining({
+      kind: 'codeAgent',
+      name: 'product-builder.v1',
+      semantics: expect.objectContaining({
+        placement: 'providerManaged',
+        hostLifetime: 'providerManaged',
+      }),
+    }));
+    expect(graph?.nodes.some((node) => node.kind === 'actor')).toBe(false);
 
-    const actorRuntime = createDeterministicApplicationActorRuntime();
-    const uninstallActor = installApplicationActorRuntimeResolver(() => actorRuntime);
     const uninstallProviders = installApplicationCodeAgentRuntimeResolver(() => ({
       harness: harnessImplementation,
       workspace: workspaceImplementation,
@@ -125,7 +130,6 @@ describe('provider-neutral codeAgent composition', () => {
       if (previousProfile === undefined) delete process.env.APPLIK8S_PROFILE_VARIANT;
       else process.env.APPLIK8S_PROFILE_VARIANT = previousProfile;
       uninstallProviders();
-      uninstallActor();
     }
   });
 
@@ -146,6 +150,23 @@ describe('provider-neutral codeAgent composition', () => {
     await expect(workspace.lease({
       workspace: 'safe', runId: 'run-two', fencingToken: 'fence-two',
     })).rejects.toThrow(/active fenced writer/u);
+  });
+
+  it('reattaches durable workspace leases and fences competing writers after provider restart', async () => {
+    root = await mkdtemp(join(tmpdir(), 'applik8s-code-agent-restart-'));
+    const first = createLocalCodeWorkspaceProvider({ root });
+    const request = { workspace: 'durable', runId: 'run-one', fencingToken: 'fence-one' };
+    const lease = await first.lease(request);
+
+    const restarted = createLocalCodeWorkspaceProvider({ root });
+    await expect(restarted.lease(request)).resolves.toEqual(lease);
+    await expect(restarted.lease({
+      workspace: 'durable', runId: 'run-two', fencingToken: 'fence-two',
+    })).rejects.toThrow(/active fenced writer/u);
+    await expect(restarted.release({ lease, disposition: 'retain' })).resolves.toEqual({ released: true });
+    await expect(createLocalCodeWorkspaceProvider({ root }).lease({
+      workspace: 'durable', runId: 'run-two', fencingToken: 'fence-two',
+    })).resolves.toMatchObject({ workspace: 'durable', runId: 'run-two', generation: 1 });
   });
 
   it('replays repository mutations and validation receipts after an unknown actor outcome', async () => {
@@ -170,6 +191,8 @@ describe('provider-neutral codeAgent composition', () => {
     };
     const firstProcess = await runner.run(command);
     await expect(runner.run(command)).resolves.toEqual(firstProcess);
+    const restartedRunner = createLocalProcessRunnerProvider({ root, allow: [process.execPath] });
+    await expect(restartedRunner.run(command)).resolves.toEqual(firstProcess);
     await expect(runner.run({ ...command, arguments: ['-e', 'process.stdout.write("different")'] }))
       .rejects.toThrow(/reused with different input/u);
   });

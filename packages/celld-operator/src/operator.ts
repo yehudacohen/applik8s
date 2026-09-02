@@ -506,6 +506,16 @@ async function validateFleetSecrets(fleet: CelldFleetHandlerScope, namespace: st
   const runtime = await fleet.read.resource(CelldSecret).get({ name: fleet.spec.runtimeSecretRef.name, namespace });
   const runtimeMissing = missingSecretKeys(runtime, Object.values(celldRuntimeSecretV1.keys));
   if (runtimeMissing.length > 0) return { reason: 'RuntimeSecretInvalid', message: `Secret ${fleet.spec.runtimeSecretRef.name} does not satisfy ${celldRuntimeSecretV1.contract}; missing ${runtimeMissing.join(', ')}.` };
+  for (const binding of fleet.spec.runtime?.secretEnvironment ?? []) {
+    const secret = await fleet.read.resource(CelldSecret).get({ name: binding.secretRef.name, namespace });
+    const missing = missingSecretKeys(secret, [binding.secretRef.key]);
+    if (missing.length > 0) {
+      return {
+        reason: 'RuntimeEnvironmentSecretInvalid',
+        message: `Secret ${binding.secretRef.name} is missing runtime environment key ${binding.secretRef.key} for ${binding.name}.`,
+      };
+    }
+  }
   if (fleet.spec.objectStore.credentials.type === 'workloadIdentity') return undefined;
   const reference = fleet.spec.objectStore.credentials.secretRef;
   if (!reference) return { reason: 'ObjectStoreSecretInvalid', message: 'Secret credentials require secretRef.' };

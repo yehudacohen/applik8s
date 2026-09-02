@@ -1,12 +1,14 @@
 // typecast-file-boundary: Journey tests use intentionally partial application fixtures to exercise public admission and cleanup boundaries.
 import { describe, expect, it } from 'vitest';
+import { chirpJourneys } from '../../../examples/chirp-start/src/journeys.js';
+import { guestBookJourneys } from '../../../examples/guestbook-start/src/journeys.js';
 import {
   type JourneyExecutionAdapter,
   type JourneyIdentityFixture,
   type JourneyOwnedResourceDescription,
   type JourneyRunOptions,
+  defineJourneyAdapter,
   journey,
-  localJourneyAdapter,
   runJourney,
 } from '../src/journey.js';
 
@@ -32,7 +34,9 @@ function adapter(
   runId: string,
   overrides: Partial<JourneyExecutionAdapter> = {},
 ): JourneyExecutionAdapter {
-  return localJourneyAdapter({
+  return defineJourneyAdapter({
+    mode: overrides.mode ?? 'local',
+    boundary: 'public-admission',
     supports: () => true,
     begin: async () => ({
       isolation: {
@@ -83,6 +87,27 @@ function describeResource(resource: unknown): JourneyOwnedResourceDescription {
 }
 
 describe('source-owned application journeys', () => {
+  it('keeps meaningful GuestBook and Chirp product journeys in application source', async () => {
+    for (const [index, definition] of [...guestBookJourneys, ...chirpJourneys].entries()) {
+      const visible = new Set<string>();
+      const result = await runJourney(definition, adapter(`source-${index}`, {
+        mode: 'browser',
+        browser: {
+          goto: async path => { visible.add(`path:${path}`); },
+          click: async target => { visible.add(JSON.stringify(target)); },
+          fill: async (_target, value) => { visible.add(value); },
+          visible: async () => true,
+          text: async target => target.by === 'text' ? target.value : '',
+          accessibility: async () => [],
+        },
+      }), { ...runOptions(`source-${index}`), application: definition.id.split('.')[0] ?? 'application', mode: 'browser' });
+      expect(result.status).toBe('passed');
+      expect(result.assertions.length).toBeGreaterThanOrEqual(2);
+      expect(definition.options.dependencies).not.toHaveLength(0);
+      expect([...visible].some(value => value.startsWith('path:'))).toBe(true);
+    }
+  });
+
   it('runs the callback-native golden path through the public local admission adapter', async () => {
     const definition = journey('post.publish.v1', async (context) => {
       const author = await context.identity({ roles: ['author'] });
@@ -113,6 +138,36 @@ describe('source-owned application journeys', () => {
     expect(result.steps).toHaveLength(1);
     expect(result.assertions).toHaveLength(5);
     expect(result.providerReceipts).toEqual([{ kind: 'provider', reference: 'provider/run-001' }]);
+  });
+
+  it('runs source-owned browser steps through one bounded adapter and records semantic assertions', async () => {
+    const visited: string[] = [];
+    const fields = new Map<string, string>();
+    const definition = journey('documents.create.v1', async (context) => {
+      const browser = context.browser();
+      await browser.goto('/app/documents');
+      await browser.click({ by: 'role', role: 'button', name: 'New document' });
+      await browser.fill({ by: 'label', value: 'Title' }, 'Journey document');
+      await browser.expectVisible({ by: 'role', role: 'button', name: 'Create document' });
+      await browser.expectText({ by: 'text', value: 'Documents' }, /Documents/u);
+      await browser.expectAccessible({ maximumImpact: 'moderate' });
+    }, { modes: ['browser'], requirements: ['browser'] });
+    const result = await runJourney(definition, adapter('run-browser', {
+      mode: 'browser',
+      browser: {
+        goto: async path => { visited.push(path); },
+        click: async target => { visited.push(`click:${JSON.stringify(target)}`); },
+        fill: async (target, value) => { fields.set(JSON.stringify(target), value); },
+        visible: async () => true,
+        text: async () => 'Documents',
+        accessibility: async () => [],
+      },
+    }), { ...runOptions('run-browser'), mode: 'browser' });
+
+    expect(result.status).toBe('passed');
+    expect(result.assertions).toHaveLength(3);
+    expect(visited[0]).toBe('/app/documents');
+    expect([...fields.values()]).toEqual(['Journey document']);
   });
 
   it('blocks an unsupported requirement instead of reporting a false pass', async () => {

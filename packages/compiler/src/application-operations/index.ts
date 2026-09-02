@@ -446,6 +446,7 @@ export function compileApplicationOperationCatalog(
     ]),
     ...signalOperations(graph),
     ...actorOperations(graph),
+    ...codeAgentOperations(graph),
     ...agentLocalOperations(graph),
     ...graph.nodes.filter((node) => node.kind === 'subscription').map((subscription) => subscriptionOperation(graph, subscription)),
     ...graph.nodes.filter((node) => node.kind === 'server').flatMap((server) =>
@@ -552,6 +553,72 @@ function actorOperations(
           : ['serialized-actor-turn'],
       }];
     }));
+}
+
+function codeAgentOperations(
+  graph: ApplicationGraph,
+): readonly ApplicationOperationDescriptor[] {
+  return graph.nodes
+    .filter((node) => node.kind === 'codeAgent')
+    .flatMap((agent) => {
+      const identity = schemaDescriptor({
+        kind: 'declared',
+        runtime: 'arktype',
+        jsonSchema: { type: 'string', minLength: 1, maxLength: 200 },
+      });
+      return ([
+        {
+          id: agent.operations.run,
+          name: 'run',
+          kind: 'agent.run' as const,
+          input: schemaDescriptor(agent.definition.invocation.input),
+          output: schemaDescriptor(agent.definition.invocation.output),
+          effects: ['durable-code-agent-run', 'fenced-repository-write'],
+        },
+        {
+          id: agent.operations.cancel,
+          name: 'cancel',
+          kind: 'agent.cancel' as const,
+          input: schemaDescriptor({
+            kind: 'declared',
+            runtime: 'arktype',
+            jsonSchema: {
+              type: 'object',
+              properties: {
+                repositoryId: { type: 'string', minLength: 1, maxLength: 200 },
+                idempotencyKey: { type: 'string', minLength: 1, maxLength: 500 },
+              },
+              required: ['repositoryId', 'idempotencyKey'],
+              additionalProperties: false,
+            },
+          }),
+          output: schemaDescriptor({
+            kind: 'declared',
+            runtime: 'arktype',
+            jsonSchema: {
+              type: 'object',
+              properties: { status: { enum: ['cancelled', 'alreadyTerminal'] } },
+              required: ['status'],
+              additionalProperties: false,
+            },
+          }),
+          effects: ['durable-code-agent-cancellation'],
+        },
+      ]).map((operation): ApplicationOperationDescriptor => ({
+        apiVersion: 'applik8s.operation/v1alpha1',
+        version: agent.definition.id.slice(agent.definition.id.lastIndexOf('.') + 1),
+        ...operation,
+        errors: {},
+        target: { model: agent.definition.id, identity },
+        authority: operationAuthority(undefined, ['admission', 'execution', 'result-read']),
+        transports: [{
+          id: `${agent.id}.${operation.name}.direct`,
+          transport: 'direct',
+          server: 'application-code-agent-runtime',
+        }],
+        placement: { nodeId: agent.id, runtime: 'agent-worker' },
+      }));
+    });
 }
 
 function agentLocalOperations(

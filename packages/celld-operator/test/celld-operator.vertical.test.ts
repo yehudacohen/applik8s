@@ -91,6 +91,45 @@ describe('@applik8s/celld-operator', () => {
     expect(scaled.statefulSet).not.toEqual(first.statefulSet);
   });
 
+  it('projects bounded worker configuration and Secret references into both Celld phases', () => {
+    const spec = fleetSpec({
+      runtime: {
+        environment: [{ name: 'APPLIK8S_CODE_AGENT_MODEL_ID', value: 'coding-model' }],
+        secretEnvironment: [{
+          name: 'APPLIK8S_CODE_AGENT_MODEL_API_KEY',
+          secretRef: { name: 'code-agent-model', key: 'api-key' },
+        }],
+      },
+    });
+    expect(() => CelldFleetSpecSchema.assert(spec)).not.toThrow();
+    const children = renderCelldFleetChildren({
+      identity: { name: 'code-agents', namespace: 'tenant-a', uid: 'fleet-uid', generation: 1 },
+      spec,
+      fingerprint: `${manifestDigest}:1`,
+      rolloutPartition: 0,
+    });
+    for (const resource of [children.deploymentJob, children.statefulSet]) {
+      const serialized = JSON.stringify(resource);
+      expect(serialized).toContain('CELLD_VAR_APPLIK8S_CODE_AGENT_MODEL_ID');
+      expect(serialized).toContain('coding-model');
+      expect(serialized).toContain('CELLD_VAR_APPLIK8S_CODE_AGENT_MODEL_API_KEY');
+      expect(serialized).toContain('code-agent-model');
+      expect(serialized).toContain('api-key');
+    }
+    expect(JSON.stringify(children.all)).not.toContain('model-secret-value');
+    expect(() => renderCelldFleetChildren({
+      identity: { name: 'code-agents', namespace: 'tenant-a', uid: 'fleet-uid', generation: 1 },
+      spec: fleetSpec({
+        runtime: {
+          environment: [{ name: 'DUPLICATE', value: 'public' }],
+          secretEnvironment: [{ name: 'DUPLICATE', secretRef: { name: 'runtime', key: 'value' } }],
+        },
+      }),
+      fingerprint: `${manifestDigest}:1`,
+      rolloutPartition: 0,
+    })).toThrow(/DUPLICATE has more than one source/u);
+  });
+
   it('renders the release-specific readiness endpoint across the v0.3 to v0.4 boundary', () => {
     const historical = renderCelldFleetChildren({
       identity: { name: 'actors', namespace: 'tenant-a', uid: 'fleet-uid', generation: 1 },

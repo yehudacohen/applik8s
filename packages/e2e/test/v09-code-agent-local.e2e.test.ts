@@ -8,10 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   app,
-  createDeterministicApplicationActorRuntime,
-  installApplicationActorRuntimeResolver,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import { AI } from '@applik8s/ai';
 import {
   AgentHarness,
   CodeWorkspace,
@@ -111,17 +110,16 @@ describe.skipIf(!enabled)('v0.9 local codeAgent qualification', () => {
     application.profile(application.installation.spec, 'profile').provide(Repository).starter(() => activeProviders.repository).external(() => activeProviders.repository).exhaustive();
     application.profile(application.installation.spec, 'profile').provide(Processes).starter(() => activeProviders.process).external(() => activeProviders.process).exhaustive();
     const identity = application.serviceIdentity('product-builder');
+    const CodingModel = AI.model('coding', { capabilities: [AI.tools, AI.textInput, AI.textOutput] });
     const ProductBuilder = application.include(codeAgent('product-builder.v1', {
-      actor: { key: type('string') },
       identity,
+      model: CodingModel,
       harness: Harness,
       workspace: Workspace,
       source: Repository,
       process: Processes,
       validation: [{ executable: process.execPath, arguments: ['-e', 'process.exit(0)'] }],
     }));
-    const actorRuntime = createDeterministicApplicationActorRuntime();
-    const uninstallActor = installApplicationActorRuntimeResolver(() => actorRuntime);
     const uninstallCode = installApplicationCodeAgentRuntimeResolver(() => activeProviders);
     const priorProfile = process.env.APPLIK8S_PROFILE_VARIANT;
     process.env.APPLIK8S_PROFILE_VARIANT = 'starter';
@@ -184,7 +182,6 @@ describe.skipIf(!enabled)('v0.9 local codeAgent qualification', () => {
       if (priorProfile === undefined) delete process.env.APPLIK8S_PROFILE_VARIANT;
       else process.env.APPLIK8S_PROFILE_VARIANT = priorProfile;
       uninstallCode();
-      uninstallActor();
     }
   }, 60_000);
 });

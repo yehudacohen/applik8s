@@ -122,6 +122,7 @@ describe('OpenCode development-agent adapter', () => {
     const request = {
       apiVersion: 'applik8s.agentHarnessRun/v1alpha1' as const,
       runId: 'run-one', fencingToken: 'fence-one', instruction: 'Update it.',
+      model: { apiVersion: 'applik8s.aiModel/v1alpha1' as const, name: 'coding', capabilities: [], constraints: {} },
       workspace: {
         apiVersion: 'applik8s.codeWorkspaceLease/v1alpha1' as const,
         id: 'lease-one', workspace: 'repository-one', runId: 'run-one', fencingToken: 'fence-one',

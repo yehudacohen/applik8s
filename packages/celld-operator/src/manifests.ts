@@ -58,12 +58,14 @@ export function renderCelldFleetChildren(options: RenderCelldFleetChildrenOption
     : `${identity.name}-celld`;
   const peerServiceName = `${identity.name}-peers`;
   const storageEnvironment = objectStoreEnvironment(spec);
+  const customRuntimeEnvironment = celldRuntimeEnvironment(spec);
   const runtimeEnvironment = [
     envSecret('CELLD_VAR_APPLIK8S_ACTOR_AUTHORIZATION', spec.runtimeSecretRef.name, celldRuntimeSecretV1.keys.actorAuthorization),
     envSecret('CELLD_VAR_APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION', spec.runtimeSecretRef.name, celldRuntimeSecretV1.keys.applicationAuthorization),
     envSecret('CELLD_VAR_APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY', spec.runtimeSecretRef.name, celldRuntimeSecretV1.keys.connectionSigningKey),
     envSecret('CELLD_VAR_APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION', spec.runtimeSecretRef.name, celldRuntimeSecretV1.keys.operatorAuthorization),
     { name: 'CELLD_VAR_APPLIK8S_ACTOR_APPLICATION_ENDPOINT', value: spec.applicationEndpoint },
+    ...customRuntimeEnvironment,
   ];
   const serviceAccount: AnyKubernetesObject = {
     apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata(serviceAccountName),
@@ -231,6 +233,31 @@ function bucketUrl(spec: CelldFleetSpec): string {
 
 function envSecret(name: string, secretName: string, key: string): object {
   return { name, valueFrom: { secretKeyRef: { name: secretName, key } } };
+}
+
+function celldRuntimeEnvironment(spec: CelldFleetSpec): readonly object[] {
+  const reserved = new Set([
+    'APPLIK8S_ACTOR_AUTHORIZATION',
+    'APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION',
+    'APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY',
+    'APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION',
+    'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+  ]);
+  const names = new Set<string>();
+  const add = (name: string) => {
+    if (reserved.has(name)) throw new Error(`CelldFleet runtime environment ${name} is owned by the operator.`);
+    if (names.has(name)) throw new Error(`CelldFleet runtime environment ${name} has more than one source.`);
+    names.add(name);
+  };
+  const values = (spec.runtime?.environment ?? []).map(binding => {
+    add(binding.name);
+    return { name: `CELLD_VAR_${binding.name}`, value: binding.value };
+  });
+  const secrets = (spec.runtime?.secretEnvironment ?? []).map(binding => {
+    add(binding.name);
+    return envSecret(`CELLD_VAR_${binding.name}`, binding.secretRef.name, binding.secretRef.key);
+  });
+  return [...values, ...secrets];
 }
 
 function objectStoreEnvironment(spec: CelldFleetSpec): readonly object[] {

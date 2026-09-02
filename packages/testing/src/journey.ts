@@ -157,6 +157,7 @@ export interface JourneyExecutionAdapter {
     signal: AbortSignal,
   ): Promise<JourneyAuthorityDecision>;
   readApplicationPlan?(run: JourneyRunEnvironment, signal: AbortSignal): Promise<unknown>;
+  browser?: JourneyBrowserAdapter;
   describeOwnedResource(resource: unknown, run: JourneyRunEnvironment): JourneyOwnedResourceDescription;
   verifyCleanupAuthority(
     resource: JourneyOwnedResourceDescription,
@@ -168,6 +169,36 @@ export interface JourneyExecutionAdapter {
     run: JourneyRunEnvironment,
     signal: AbortSignal,
   ): Promise<readonly JourneyEvidenceReference[]>;
+}
+
+export type JourneyBrowserTarget =
+  | { readonly by: 'role'; readonly role: string; readonly name?: string }
+  | { readonly by: 'label' | 'text' | 'testId' | 'placeholder'; readonly value: string };
+
+/** Provider-neutral browser surface used by source-owned product journeys. */
+export interface JourneyBrowserAdapter {
+  goto(path: string, run: JourneyRunEnvironment, signal: AbortSignal): Promise<void>;
+  click(target: JourneyBrowserTarget, run: JourneyRunEnvironment, signal: AbortSignal): Promise<void>;
+  fill(target: JourneyBrowserTarget, value: string, run: JourneyRunEnvironment, signal: AbortSignal): Promise<void>;
+  visible(target: JourneyBrowserTarget, run: JourneyRunEnvironment, signal: AbortSignal): Promise<boolean>;
+  text(target: JourneyBrowserTarget, run: JourneyRunEnvironment, signal: AbortSignal): Promise<string>;
+  accessibility?(run: JourneyRunEnvironment, signal: AbortSignal): Promise<readonly JourneyBrowserAccessibilityFinding[]>;
+}
+
+export interface JourneyBrowserAccessibilityFinding {
+  readonly rule: string;
+  readonly impact: 'minor' | 'moderate' | 'serious' | 'critical';
+  readonly target: string;
+  readonly summary: string;
+}
+
+export interface JourneyBrowserContext {
+  goto(path: string): Promise<void>;
+  click(target: JourneyBrowserTarget): Promise<void>;
+  fill(target: JourneyBrowserTarget, value: string): Promise<void>;
+  expectVisible(target: JourneyBrowserTarget, description?: string): Promise<void>;
+  expectText(target: JourneyBrowserTarget, expected: string | RegExp, description?: string): Promise<void>;
+  expectAccessible(options?: { readonly maximumImpact?: JourneyBrowserAccessibilityFinding['impact'] }): Promise<void>;
 }
 
 export interface JourneyAssertion<T> {
@@ -202,6 +233,7 @@ export interface JourneyContext {
   ): Promise<TEvent>;
   expectAuthority(identity: JourneyIdentityFixture, expectation: JourneyAuthorityExpectation): JourneyAuthorityAssertion;
   expectPlan(predicate: (plan: unknown) => boolean, description?: string): Promise<void>;
+  browser(): JourneyBrowserContext;
   step<T>(name: string, closure: () => Promise<T> | T): Promise<T>;
   owns<T>(resource: T, contract: JourneyCleanupContract<T>): T;
 }
@@ -319,6 +351,12 @@ export function localJourneyAdapter(options: LocalJourneyAdapterOptions): Journe
     mode: 'local',
     boundary: 'public-admission',
   });
+}
+
+function browserTargetDescription(target: JourneyBrowserTarget): string {
+  return target.by === 'role'
+    ? `${target.role}${target.name ? ` named ${target.name}` : ''}`
+    : `${target.by} ${target.value}`;
 }
 
 export async function runJourney(
@@ -561,6 +599,54 @@ class JourneyContextRuntime implements JourneyContext {
     const status = predicate(plan) ? 'passed' : 'failed';
     this.assertions.push({ id, kind: 'plan', description, status });
     if (status === 'failed') throw new JourneyExecutionError('JOURNEY_DEPENDENCY_UNRESOLVED', description, this.definition.id);
+  }
+
+  browser(): JourneyBrowserContext {
+    ensureRequirement(this.adapter, 'browser');
+    const browser = this.adapter.browser;
+    if (!browser) {
+      throw new JourneyExecutionError(
+        'JOURNEY_PROVIDER_INCOMPATIBLE',
+        `Journey ${this.definition.id} requires a browser adapter.`,
+        this.definition.id,
+      );
+    }
+    const assertion = async (description: string, predicate: () => Promise<boolean>) => {
+      const id = this.nextAssertionId();
+      try {
+        const passed = await predicate();
+        this.assertions.push({ id, kind: 'result', description, status: passed ? 'passed' : 'failed' });
+        if (!passed) throw new JourneyExecutionError('JOURNEY_DEPENDENCY_UNRESOLVED', description, this.definition.id);
+      } catch (error) {
+        if (!this.assertions.some(entry => entry.id === id)) {
+          this.assertions.push({ id, kind: 'result', description, status: 'failed' });
+        }
+        throw error;
+      }
+    };
+    const context: JourneyBrowserContext = Object.freeze({
+      goto: (path: string) => browser.goto(path, this.environment, this.signal),
+      click: (target: JourneyBrowserTarget) => browser.click(target, this.environment, this.signal),
+      fill: (target: JourneyBrowserTarget, value: string) => browser.fill(target, value, this.environment, this.signal),
+      expectVisible: (target: JourneyBrowserTarget, description = `browser target ${browserTargetDescription(target)} is visible`) =>
+        assertion(description, () => browser.visible(target, this.environment, this.signal)),
+      expectText: (target: JourneyBrowserTarget, expected: string | RegExp, description = `browser target ${browserTargetDescription(target)} has expected text`) =>
+        assertion(description, async () => {
+          const actual = await browser.text(target, this.environment, this.signal);
+          return typeof expected === 'string' ? actual.includes(expected) : expected.test(actual);
+        }),
+      expectAccessible: async ({ maximumImpact = 'moderate' }: { readonly maximumImpact?: JourneyBrowserAccessibilityFinding['impact'] } = {}) => {
+        if (!browser.accessibility) {
+          throw new JourneyExecutionError('JOURNEY_PROVIDER_INCOMPATIBLE', 'Browser adapter does not provide accessibility evidence.', this.definition.id);
+        }
+        const impacts = ['minor', 'moderate', 'serious', 'critical'] as const;
+        const maximum = impacts.indexOf(maximumImpact);
+        await assertion(`browser has no accessibility findings above ${maximumImpact}`, async () =>
+          (await browser.accessibility?.(this.environment, this.signal) ?? [])
+            .every(finding => impacts.indexOf(finding.impact) <= maximum));
+      },
+    });
+    return context;
   }
 
   async step<T>(name: string, closure: () => Promise<T> | T): Promise<T> {

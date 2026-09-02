@@ -2,7 +2,7 @@
 // process, and JSON boundaries before translating them into protocol records.
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
   ApplicationAgentHarnessProvider,
@@ -16,6 +16,8 @@ import { bindCodeAgentProviderRuntime } from './runtime-contract.js';
 
 export interface LocalCodeProviderOptions {
   readonly root: string;
+  /** Durable provider metadata. Defaults beside, not inside, leased workspaces. */
+  readonly stateRoot?: string;
   readonly clock?: () => Date;
 }
 
@@ -23,52 +25,65 @@ export function createLocalCodeWorkspaceProvider(
   options: LocalCodeProviderOptions,
 ): ApplicationCodeWorkspaceProvider {
   const root = resolve(options.root);
+  const stateRoot = resolve(options.stateRoot ?? join(root, '.applik8s-code-agent'));
   const clock = options.clock ?? (() => new Date());
-  const active = new Map<string, ApplicationCodeWorkspaceLease>();
   const implementation: ApplicationCodeWorkspaceProvider = {
     provider: 'local-workspace', kind: 'local-code-workspace', mode: 'live',
     async lease(input) {
       const workspace = stableIdentity(input.workspace, 'workspace');
       const runId = boundedText(input.runId, 'runId', 1, 500);
       const fencingToken = boundedText(input.fencingToken, 'fencingToken', 1, 500);
-      const prior = active.get(workspace);
-      if (prior) {
-        if (prior.runId !== runId || prior.fencingToken !== fencingToken) {
-          throw new Error(`Workspace ${workspace} already has an active fenced writer.`);
+      return withStateLock(stateRoot, `workspace:${workspace}`, async () => {
+        const prior = await readWorkspaceLease(stateRoot, workspace);
+        const now = clock();
+        const active = prior && Date.parse(prior.expiresAt) > now.getTime();
+        if (active) {
+          if (prior.runId !== runId || prior.fencingToken !== fencingToken) {
+            throw new Error(`Workspace ${workspace} already has an active fenced writer.`);
+          }
+          return prior;
         }
-        return prior;
-      }
-      const workspaceRoot = inside(root, join(root, workspace));
-      await mkdir(workspaceRoot, { recursive: true });
-      const acquiredAt = clock();
-      const ttlMs = boundedInteger(input.ttlMs ?? 30 * 60_000, 1_000, 24 * 60 * 60_000, 'ttlMs');
-      const lease = Object.freeze({
-        apiVersion: 'applik8s.codeWorkspaceLease/v1alpha1' as const,
-        id: `lease:${workspace}:${createHash('sha256').update(`${runId}\0${fencingToken}`).digest('hex').slice(0, 20)}`,
-        workspace,
-        runId,
-        fencingToken,
-        generation: 1,
-        root: workspaceRoot,
-        baseRevision: input.baseRevision ?? await directoryDigest(workspaceRoot),
-        acquiredAt: acquiredAt.toISOString(),
-        expiresAt: new Date(acquiredAt.getTime() + ttlMs).toISOString(),
+        const workspaceRoot = inside(root, join(root, workspace));
+        await mkdir(workspaceRoot, { recursive: true });
+        const ttlMs = boundedInteger(input.ttlMs ?? 30 * 60_000, 1_000, 24 * 60 * 60_000, 'ttlMs');
+        const sameOwner = prior?.runId === runId && prior.fencingToken === fencingToken;
+        const lease = Object.freeze({
+          apiVersion: 'applik8s.codeWorkspaceLease/v1alpha1' as const,
+          id: sameOwner
+            ? prior.id
+            : `lease:${workspace}:${createHash('sha256').update(`${runId}\0${fencingToken}`).digest('hex').slice(0, 20)}`,
+          workspace,
+          runId,
+          fencingToken,
+          generation: (prior?.generation ?? 0) + 1,
+          root: workspaceRoot,
+          baseRevision: sameOwner
+            ? prior.baseRevision
+            : input.baseRevision ?? await directoryDigest(workspaceRoot),
+          acquiredAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+        });
+        await writeJsonAtomic(workspaceLeasePath(stateRoot, workspace), lease);
+        return lease;
       });
-      active.set(workspace, lease);
-      return lease;
     },
     async release(input) {
-      const current = active.get(input.lease.workspace);
-      assertLease(current, input.lease);
-      active.delete(input.lease.workspace);
-      if (input.disposition === 'release') {
-        await rm(inside(root, input.lease.root), { recursive: true, force: true });
-      }
-      return { released: true };
+      return withStateLock(stateRoot, `workspace:${input.lease.workspace}`, async () => {
+        const current = await readWorkspaceLease(stateRoot, input.lease.workspace);
+        assertLease(current, input.lease);
+        if (input.disposition === 'release') {
+          await rm(inside(root, input.lease.root), { recursive: true, force: true });
+        }
+        await rm(workspaceLeasePath(stateRoot, input.lease.workspace), { force: true });
+        return { released: true };
+      });
     },
   };
   return bindCodeAgentProviderRuntime(implementation, 'workspace', {
-    env: { APPLIK8S_CODE_WORKSPACE_ROOT: root },
+    env: {
+      APPLIK8S_CODE_WORKSPACE_ROOT: root,
+      APPLIK8S_CODE_WORKSPACE_STATE_ROOT: stateRoot,
+    },
   });
 }
 
@@ -76,6 +91,7 @@ export function createLocalSourceRepositoryProvider(
   options: LocalCodeProviderOptions,
 ): ApplicationSourceRepositoryProvider {
   const root = resolve(options.root);
+  const stateRoot = resolve(options.stateRoot ?? join(root, '.applik8s-code-agent'));
   const implementation: ApplicationSourceRepositoryProvider = {
     provider: 'local-source', kind: 'local-source-repository', mode: 'live',
     async inspect(input) {
@@ -118,7 +134,10 @@ export function createLocalSourceRepositoryProvider(
     },
   };
   return bindCodeAgentProviderRuntime(implementation, 'repository', {
-    env: { APPLIK8S_CODE_WORKSPACE_ROOT: root },
+    env: {
+      APPLIK8S_CODE_WORKSPACE_ROOT: root,
+      APPLIK8S_CODE_WORKSPACE_STATE_ROOT: stateRoot,
+    },
   });
 }
 
@@ -127,12 +146,9 @@ export function createLocalProcessRunnerProvider(options: LocalCodeProviderOptio
   readonly inheritedEnvironment?: readonly string[];
 }): ApplicationProcessRunnerProvider {
   const root = resolve(options.root);
+  const stateRoot = resolve(options.stateRoot ?? join(root, '.applik8s-code-agent'));
   const allow = new Set(options.allow.map((value) => boundedText(value, 'allowed executable', 1, 200)));
   const inherited = options.inheritedEnvironment ?? ['PATH'];
-  const receipts = new Map<string, {
-    readonly fingerprint: string;
-    readonly result: Awaited<ReturnType<ApplicationProcessRunnerProvider['run']>>;
-  }>();
   const implementation: ApplicationProcessRunnerProvider = {
     provider: 'local-process', kind: 'local-process-runner', mode: 'live',
     async run(input) {
@@ -148,29 +164,122 @@ export function createLocalProcessRunnerProvider(options: LocalCodeProviderOptio
         arguments: input.arguments ?? [],
         timeoutMs,
       }));
-      const prior = idempotencyKey ? receipts.get(idempotencyKey) : undefined;
-      if (prior) {
-        if (prior.fingerprint !== fingerprint) throw new Error(`Process idempotency key ${idempotencyKey} was reused with different input.`);
-        return prior.result;
-      }
-      const startedAt = new Date();
-      const result = await boundedProcess(input.executable, input.arguments ?? [], input.lease.root, timeoutMs, inherited);
-      const receipt = Object.freeze({
-        command: [input.executable, ...(input.arguments ?? [])].join(' '),
-        ...result,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-      });
-      if (idempotencyKey) receipts.set(idempotencyKey, { fingerprint, result: receipt });
-      return receipt;
+      const execute = async () => {
+        const receiptPath = idempotencyKey
+          ? processReceiptPath(stateRoot, input.lease.id, idempotencyKey)
+          : undefined;
+        const prior = receiptPath ? await readProcessReceipt(receiptPath) : undefined;
+        if (prior) {
+          if (prior.fingerprint !== fingerprint) throw new Error(`Process idempotency key ${idempotencyKey} was reused with different input.`);
+          return prior.result;
+        }
+        const startedAt = new Date();
+        const result = await boundedProcess(input.executable, input.arguments ?? [], input.lease.root, timeoutMs, inherited);
+        const receipt = Object.freeze({
+          command: [input.executable, ...(input.arguments ?? [])].join(' '),
+          ...result,
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+        });
+        if (receiptPath) await writeJsonAtomic(receiptPath, { fingerprint, result: receipt });
+        return receipt;
+      };
+      return idempotencyKey
+        ? withStateLock(stateRoot, `process:${input.lease.id}:${idempotencyKey}`, execute)
+        : execute();
     },
   };
   return bindCodeAgentProviderRuntime(implementation, 'process', {
     env: {
       APPLIK8S_CODE_WORKSPACE_ROOT: root,
+      APPLIK8S_CODE_WORKSPACE_STATE_ROOT: stateRoot,
       APPLIK8S_CODE_PROCESS_ALLOW: [...allow].sort().join(','),
     },
   });
+}
+
+interface StoredProcessReceipt {
+  readonly fingerprint: string;
+  readonly result: Awaited<ReturnType<ApplicationProcessRunnerProvider['run']>>;
+}
+
+function workspaceLeasePath(stateRoot: string, workspace: string): string {
+  return join(stateRoot, 'leases', `${digest(workspace).slice('sha256:'.length)}.json`);
+}
+
+function processReceiptPath(stateRoot: string, leaseId: string, idempotencyKey: string): string {
+  return join(stateRoot, 'process-receipts', `${digest(`${leaseId}\0${idempotencyKey}`).slice('sha256:'.length)}.json`);
+}
+
+async function readWorkspaceLease(
+  stateRoot: string,
+  workspace: string,
+): Promise<ApplicationCodeWorkspaceLease | undefined> {
+  const value = await readJson(workspaceLeasePath(stateRoot, workspace));
+  if (!value) return undefined;
+  if (
+    value.apiVersion !== 'applik8s.codeWorkspaceLease/v1alpha1'
+    || value.workspace !== workspace
+    || typeof value.id !== 'string'
+    || typeof value.runId !== 'string'
+    || typeof value.fencingToken !== 'string'
+    || typeof value.generation !== 'number'
+    || typeof value.root !== 'string'
+    || typeof value.baseRevision !== 'string'
+    || typeof value.acquiredAt !== 'string'
+    || typeof value.expiresAt !== 'string'
+  ) throw new Error(`Workspace ${workspace} has an invalid durable lease record.`);
+  return value as unknown as ApplicationCodeWorkspaceLease;
+}
+
+async function readProcessReceipt(path: string): Promise<StoredProcessReceipt | undefined> {
+  const value = await readJson(path);
+  if (!value) return undefined;
+  if (typeof value.fingerprint !== 'string' || !value.result || typeof value.result !== 'object') {
+    throw new Error(`Process receipt ${path} is invalid.`);
+  }
+  return value as unknown as StoredProcessReceipt;
+}
+
+async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected an object');
+    return value as Record<string, unknown>;
+  } catch (cause) {
+    if (cause && typeof cause === 'object' && Reflect.get(cause, 'code') === 'ENOENT') return undefined;
+    throw cause;
+  }
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await mkdir(resolve(path, '..'), { recursive: true });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
+  await rename(temporary, path);
+}
+
+async function withStateLock<T>(stateRoot: string, identity: string, operation: () => Promise<T>): Promise<T> {
+  const lock = join(stateRoot, 'locks', digest(identity).slice('sha256:'.length));
+  await mkdir(resolve(lock, '..'), { recursive: true });
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      await mkdir(lock);
+      break;
+    } catch (cause) {
+      if (!cause || typeof cause !== 'object' || Reflect.get(cause, 'code') !== 'EEXIST') throw cause;
+      const info = await stat(lock).catch(() => undefined);
+      if (info && Date.now() - info.mtimeMs > 30_000) {
+        await rm(lock, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring durable code-agent state lock ${identity}.`);
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 20));
+    }
+  }
+  try { return await operation(); }
+  finally { await rm(lock, { recursive: true, force: true }); }
 }
 
 export function createDeterministicAgentHarnessProvider(options: {

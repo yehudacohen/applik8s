@@ -1,0 +1,27 @@
+import { journey } from '@applik8s/testing';
+
+/** Generated application-owned acceptance: create a durable document through the real product UI. */
+export const CreateDocumentJourney = journey(
+  'agentic-start.create-document.v1',
+  async context => {
+    const browser = context.browser();
+    const title = `Journey document ${context.fixtureSeed}`;
+    await browser.goto('/app/documents');
+    await browser.click({ by: 'role', role: 'button', name: 'New document' });
+    await browser.fill({ by: 'label', value: 'Title' }, title);
+    await browser.fill({ by: 'label', value: 'Content' }, '# Objective\n\nProve the generated product boundary.');
+    await browser.click({ by: 'role', role: 'button', name: 'Create document' });
+    await browser.expectText({ by: 'text', value: title }, title, 'the document appears after authoritative requery');
+    await browser.expectAccessible({ maximumImpact: 'moderate' });
+  },
+  {
+    modes: ['browser'],
+    requirements: ['browser'],
+    dependencies: [
+      { kind: 'model', id: 'Document', reason: 'creates and observes the durable document' },
+      { kind: 'page', id: '/app/documents', reason: 'owns the document author journey' },
+    ],
+  },
+);
+
+export const applicationJourneys = Object.freeze([CreateDocumentJourney]);

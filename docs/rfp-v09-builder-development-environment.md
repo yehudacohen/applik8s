@@ -133,8 +133,8 @@ unverifiable success states.
 Builder is a committed, release-blocking v0.9 preview. The closed journey must pass against a real loopback
 OpenCode process before v0.9 may ship. Protocol doubles remain useful component evidence but cannot qualify
 the preview. Preview maturity permits compatibility evolution after v0.9; it does not permit removing,
-hiding, relabeling, or partially shipping Builder to make the release pass. The separately qualified
-distributed `codeAgent()` → Celld → OpenCode path is neither a prerequisite nor a substitute for this
+hiding, relabeling, or partially shipping Builder to make the release pass. The distributed
+Celld/OpenCode provider is deferred beyond v0.9 and is neither a prerequisite nor a substitute for this
 independent Builder journey.
 
 ## Architecture
