@@ -82,9 +82,10 @@
     "@effect/platform-node": "4.0.0-rc.110",
     "@effect/platform-node-shared": "4.0.0-rc.110",
     "@effect/vitest": "4.0.0-rc.110",
+    "@prisma/dev": "0.25.2",
     "alchemy": "2.0.0-beta.74",
     "effect": "4.0.0-rc.110",
-    "js-yaml": "4.3.0"
+    "js-yaml": "4.3.1"
   },
   "scripts": {
     "generate:runtime-contract": "bun run scripts/generate-runtime-contract.ts",
