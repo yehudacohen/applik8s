@@ -149,6 +149,44 @@ class DeliveryError extends Error {
     expect(dependencies?.source).not.toContain('function alsoNotARealHelper');
   });
 
+  it('captures later shared helpers for multiple direct named model views', () => {
+    const file = new URL(
+      '../../compiler/test/fixtures/callback-provenance/direct-views.ts',
+      import.meta.url,
+    ).pathname;
+    // Preserve fixture names and declaration lines as literals so the
+    // typecast: provenance regression uses each exact declaration-site literal.
+    for (const [name, line] of [
+      ['loadFirst', 8],
+      ['loadSecond', 12],
+    ] as const) {
+      const source = `async function ${name}(input, context) {
+        return normalizeViewResult(sharedProjection(${JSON.stringify(name)}, input, context));
+      }`;
+      const unsupported = unsupportedRouteFreeIdentifiers(
+        analyzeApplicationServerRouteSource(source),
+        new Set(),
+      );
+      const dependencies = applicationRouteSourceDependencies(
+        {
+          id: name,
+          method: 'POST',
+          path: '/view/run',
+          handlerSource: source,
+          handlerSourceKind: 'source',
+          handlerSourceLocation: { file, line, column: 1 },
+        },
+        unsupported,
+        new Set(),
+      );
+      expect(dependencies?.source).toContain('sharedProjection');
+      expect(dependencies?.source).toContain('./shared.js');
+      expect(dependencies?.source).toContain('function normalizeViewResult');
+      expect(dependencies?.source).not.toContain('function templateImpostor');
+      expect(dependencies?.source).not.toContain('function nestedImpostor');
+    }
+  });
+
   it('keeps direct workflow and signal handles executable without attributing child effects to orchestration', () => {
     const dependencies = applicationRouteSourceDependencies({
       id: 'review',

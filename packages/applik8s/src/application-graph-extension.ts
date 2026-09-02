@@ -51,6 +51,8 @@ export function registerApplicationGraphExtension(
   scope: KubernetesApplicationScope,
   contribution: ApplicationGraphExtensionContribution,
 ): void {
+  // Reflect.get crosses the private symbol-keyed extension boundary;
+  // typecast: registration validates the reflected callable before invoking it.
   const register = Reflect.get(scope, applicationGraphExtensionRegistrar) as
     | ApplicationGraphExtensionRegistration
     | undefined;

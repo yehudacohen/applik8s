@@ -27,6 +27,9 @@ interface BrowserDocument {
 test('executes the generated source-owned document journey through the browser adapter', async ({ page }) => {
   const sourceRoot = process.env.APPLIK8S_AGENTIC_PRODUCT_SOURCE_ROOT;
   if (!sourceRoot) throw new Error('The generated Agentic Start source root is required for source-owned journey qualification.');
+  // The acceptance harness loads a freshly generated application whose source
+  // root is unknowable at build time.
+  // static-import-exception: the per-run generated module requires runtime loading.
   const module = await import(pathToFileURL(`${sourceRoot}/src/journeys.ts`).href) as {
     readonly applicationJourneys?: readonly import('@applik8s/testing').JourneyDefinition[];
   };

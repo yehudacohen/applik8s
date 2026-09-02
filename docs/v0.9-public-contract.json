@@ -243,6 +243,8 @@
             "ApplicationTanStackConnectionOptions",
             "ApplicationTanStackPersistenceMiddlewareContext",
             "ApplicationTanStackPersistenceOptions",
+            "ApplicationTanStackPhysicalCallAdmission",
+            "ApplicationTanStackPhysicalCallAdmissionDecision",
             "ApplicationTanStackPhysicalCallFacts",
             "ApplicationTanStackPhysicalCallMiddleware",
             "ApplicationTanStackPhysicalCallMiddlewareOptions",
@@ -502,6 +504,7 @@
             "ApplicationClickStackObservabilityProvider",
             "ApplicationClosureSubject",
             "ApplicationCloudWatchObservabilityProvider",
+            "ApplicationCodeAgentNode",
             "ApplicationCommandDomainError",
             "ApplicationCommandEffectEnforcementContract",
             "ApplicationCommandGateway",
@@ -797,6 +800,7 @@
             "ApplicationKubernetesCapabilityError",
             "ApplicationKubernetesCapabilityFailureCode",
             "ApplicationKubernetesCapabilityHost",
+            "ApplicationKubernetesCapabilityHostResolver",
             "ApplicationKubernetesCapabilityIntent",
             "ApplicationKubernetesCapabilityOperation",
             "ApplicationKubernetesCapabilityRequest",
@@ -2378,6 +2382,7 @@
             "installApplicationAgentInvocationRuntimeResolver",
             "installApplicationJobRuntimeResolver",
             "installApplicationKubernetesCapabilityHostResolver",
+            "installApplicationKubernetesCapabilityWitHost",
             "installApplicationLakehousePublicationRuntimeResolver",
             "installApplicationLakehouseQueryRuntimeResolver",
             "installApplicationObjectStorageRuntimeResolver",
@@ -3634,6 +3639,24 @@
           }
         },
         {
+          "name": "./internal/application-graph-extension",
+          "source": "packages/applik8s/src/application-graph-extension.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/applik8s"
+          },
+          "symbols": [
+            "ApplicationGraphExtensionContribution",
+            "applicationQualifiedProviderRef",
+            "applyApplicationGraphExtension",
+            "bindApplicationGraphExtensionRegistrar",
+            "registerApplicationGraphExtension"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./internal/application-graph-extension"
+          }
+        },
+        {
           "name": "./internal/historical-model-commands",
           "source": "packages/applik8s/src/historical-model-commands.ts",
           "kind": "module",
@@ -3832,6 +3855,7 @@
             "ApplicationKubernetesCapabilityError",
             "ApplicationKubernetesCapabilityFailureCode",
             "ApplicationKubernetesCapabilityHost",
+            "ApplicationKubernetesCapabilityHostResolver",
             "ApplicationKubernetesCapabilityIntent",
             "ApplicationKubernetesCapabilityOperation",
             "ApplicationKubernetesCapabilityRequest",
@@ -3844,6 +3868,21 @@
           ],
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/applik8s:./kubernetes-cluster-runtime"
+          }
+        },
+        {
+          "name": "./kubernetes-cluster-wit-runtime",
+          "source": "packages/applik8s/src/kubernetes-cluster-wit-runtime.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/applik8s"
+          },
+          "symbols": [
+            "ApplicationKubernetesCapabilityWitImportResult",
+            "installApplicationKubernetesCapabilityWitHost"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./kubernetes-cluster-wit-runtime"
           }
         },
         {
@@ -4051,6 +4090,7 @@
             "ApplicationCatalogState",
             "ApplicationCausalPrincipalContext",
             "ApplicationClosureSubject",
+            "ApplicationCodeAgentNode",
             "ApplicationCommandEffectEnforcementContract",
             "ApplicationCommandHandlerNode",
             "ApplicationCommandNode",
@@ -6532,7 +6572,9 @@
       },
       "commands": [],
       "dependencies": [
+        "@applik8s/ai",
         "@applik8s/applik8s",
+        "@applik8s/client",
         "@applik8s/core",
         "@applik8s/sdk"
       ],
@@ -6546,6 +6588,7 @@
           },
           "symbols": [
             "AgentHarness",
+            "ApplicationAgentHarnessCancellationRequest",
             "ApplicationAgentHarnessEvent",
             "ApplicationAgentHarnessProvider",
             "ApplicationAgentHarnessRequest",
@@ -6558,6 +6601,7 @@
             "ApplicationCodeWorkspaceLease",
             "ApplicationCodeWorkspaceLeaseRequest",
             "ApplicationCodeWorkspaceProvider",
+            "ApplicationCodeWorkspaceReference",
             "ApplicationCodeWorkspaceReleaseRequest",
             "ApplicationProcessResult",
             "ApplicationProcessRunnerProvider",
@@ -7098,6 +7142,7 @@
             "ApplicationCatalogState",
             "ApplicationCausalPrincipalContext",
             "ApplicationClosureSubject",
+            "ApplicationCodeAgentNode",
             "ApplicationCommandEffectEnforcementContract",
             "ApplicationCommandHandlerNode",
             "ApplicationCommandNode",
@@ -11187,6 +11232,23 @@
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/runtime-kubernetes:./operator-runtime"
           }
+        },
+        {
+          "name": "./workflow-gateway-admission",
+          "source": "packages/runtime-kubernetes/src/workflow-gateway-admission.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/runtime-kubernetes"
+          },
+          "symbols": [
+            "AuthenticationV1Api",
+            "CoordinationV1Api",
+            "KubeConfig",
+            "V1MicroTime"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/runtime-kubernetes:./workflow-gateway-admission"
+          }
         }
       ]
     },
@@ -12368,6 +12430,10 @@
             "JourneyAuthorityAssertion",
             "JourneyAuthorityDecision",
             "JourneyAuthorityExpectation",
+            "JourneyBrowserAccessibilityFinding",
+            "JourneyBrowserAdapter",
+            "JourneyBrowserContext",
+            "JourneyBrowserTarget",
             "JourneyCleanupContext",
             "JourneyCleanupContract",
             "JourneyCleanupResult",
@@ -15856,7 +15922,8 @@
       "code": "KUBERNETES_CLUSTER_PROTOCOL_INCOMPATIBLE",
       "owner": "package:@applik8s/applik8s",
       "sources": [
-        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/applik8s/src/kubernetes-cluster-wit-runtime.ts"
       ],
       "maturity": "stable-1.0-candidate",
       "compatibility": [
@@ -15929,6 +15996,7 @@
       "owner": "workspace:cross-package",
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/applik8s/src/kubernetes-cluster-wit-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
       "maturity": "stable-1.0-candidate",

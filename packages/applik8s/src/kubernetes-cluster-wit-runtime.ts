@@ -4,6 +4,9 @@ import type {
   ApplicationKubernetesCapabilityResponse,
 } from './kubernetes-cluster-runtime.js';
 
+// typecast-file-boundary: this module is the validation boundary between
+// untyped WIT JSON transport values and the typed Kubernetes capability API.
+
 const protocol = 'applik8s.kubernetes-capability/v1alpha1' as const;
 const resolverSymbol = Symbol.for('applik8s.kubernetes-capability.host-resolver.v1alpha1');
 

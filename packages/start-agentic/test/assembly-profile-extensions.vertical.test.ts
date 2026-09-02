@@ -26,6 +26,8 @@ describe('Agentic Start assembly-profile extensions', () => {
       },
     );
 
+    // This test deliberately installs the reusable profile fragment into a
+    // typecast: use a minimal schema that omits Agentic Start's full contract.
     application.include(agenticProfilesWith({
       assemblyProfileFragments: {
         starter: [productScheduling],

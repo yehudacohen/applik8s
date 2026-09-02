@@ -2,6 +2,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
+import { serializeApplicationCallback } from '../../applik8s/src/application-callback.js';
 import {
   applicationCallbackModuleIsInstrumentable,
   applicationCallbackModuleOwnsDependencies,
@@ -1139,6 +1141,62 @@ const PostStore = { all() { return []; } };
     expect(dependencies).toHaveLength(1);
     expect(dependencies[0]?.identifier).toBe('PostStore.all');
     expect(typeof dependencies[0]?.value).toBe('function');
+  });
+
+  it('attaches distinct declaration provenance before multiple direct views synchronously serialize', async () => {
+    const sourceFile = new URL(
+      './fixtures/callback-provenance/direct-views.ts',
+      import.meta.url,
+    ).pathname;
+    const source = await readFile(sourceFile, 'utf8');
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      sourceFile,
+    );
+    const executable = ts
+      .transpileModule(instrumented, {
+        compilerOptions: {
+          module: ts.ModuleKind.ESNext,
+          target: ts.ScriptTarget.ES2022,
+        },
+      })
+      .outputText.replace(/^import .*;$/gmu, '');
+    const serialized: ReturnType<typeof serializeApplicationCallback>[] = [];
+    const Objective = {
+      view(_options: unknown, callback: (...args: never[]) => unknown) {
+        serialized.push(
+          serializeApplicationCallback({
+            registrar: 'view',
+            argumentIndex: 1,
+            property: 'run',
+            label: `direct view ${serialized.length + 1}`,
+            callback,
+          }),
+        );
+      },
+    };
+    Function(
+      'Objective',
+      'Input',
+      'Output',
+      'database',
+      'sharedProjection',
+      executable,
+    )(Objective, {}, {}, {}, () => undefined);
+
+    expect(serialized).toHaveLength(2);
+    for (const callback of serialized) {
+      expect(callback.dependencies?.source).toContain('sharedProjection');
+      expect(callback.dependencies?.source).toContain('./shared.js');
+      expect(callback.dependencies?.source).toContain(
+        'function normalizeViewResult',
+      );
+      expect(callback.unresolved).toBeUndefined();
+      expect(callback.location?.file).toBe(sourceFile);
+    }
+    expect(serialized[0]?.location?.line).not.toBe(
+      serialized[1]?.location?.line,
+    );
   });
 
   it('instruments the function-native one-shot Model.query contract and implementation separately', () => {
