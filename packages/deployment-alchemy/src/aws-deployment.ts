@@ -4,23 +4,23 @@ import type { ApplicationAwsDeploymentPlan } from "@applik8s/deployment-contract
 import { validateApplicationAwsDeploymentPlan } from "@applik8s/deployment-contract";
 import { deploy as deployAlchemyStack } from "alchemy/Deploy";
 import { destroy as destroyAlchemyStack } from "alchemy/Destroy";
+import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
 import * as Provider from "alchemy/Provider";
-import * as Output from "alchemy/Output";
-import { Resource, type Resource as AlchemyResource } from "alchemy/Resource";
+import { type Resource as AlchemyResource, Resource } from "alchemy/Resource";
 import { evalStack, Stack } from "alchemy/Stack";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import {
+  applicationAwsNativeProviders,
+  applicationAwsNativeResourceDeclarations,
+  materializeApplicationAwsNativeResources,
+} from "./aws-native-resources.js";
 import type {
   ApplicationAlchemyApplyResult,
   ApplicationAlchemyDestroyResult,
   ApplicationAlchemyPlanChange,
 } from "./backend.js";
-import {
-  applicationAwsNativeResourceDeclarations,
-  applicationAwsNativeProviders,
-  materializeApplicationAwsNativeResources,
-} from "./aws-native-resources.js";
 import { withDeploymentLease } from "./deployment-lease.js";
 import {
   type ApplicationAlchemyStackIdentity,
@@ -44,6 +44,8 @@ export interface ApplicationAwsDeploymentOptions {
   readonly buildCelldWorkerImage?: ApplicationAwsCelldWorkerImageBuilder;
   /** Process environment projected only into native Secrets Manager resources. */
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  /** Additional AWS tags applied to every deployment-owned native resource. */
+  readonly resourceTags?: Readonly<Record<string, string>>;
 }
 
 export interface ApplicationAwsImageBuilderRequest {
@@ -102,6 +104,7 @@ export interface ApplicationAwsDeployment {
 }
 
 export function createApplicationAwsDeployment(options: ApplicationAwsDeploymentOptions): ApplicationAwsDeployment {
+  assertApplicationAwsResourceTags(options.resourceTags);
   const diagnostics = validateApplicationAwsDeploymentPlan(options.plan);
   if (diagnostics.some(({ severity }) => severity === "error")) {
     throw new Error(diagnostics.map(({ code, message }) => `${code}: ${message}`).join("\n"));
@@ -137,6 +140,7 @@ export function createApplicationAwsDeployment(options: ApplicationAwsDeployment
     Effect.gen(function* () {
       const foundation = yield* materializeApplicationAwsNativeResources(options.plan, {
         environment: options.environment ?? process.env,
+        ...(options.resourceTags ? { resourceTags: options.resourceTags } : {}),
         phase: "foundation",
       });
       const repositoryUri = foundation.resources["foundation.registry"]?.repositoryUri;
@@ -169,6 +173,7 @@ export function createApplicationAwsDeployment(options: ApplicationAwsDeployment
       }
       const native = yield* materializeApplicationAwsNativeResources(options.plan, {
         environment: options.environment ?? process.env,
+        ...(options.resourceTags ? { resourceTags: options.resourceTags } : {}),
         phase: "workloads",
         seedResources: foundation.resources,
         seedOutputs: foundation.outputs,
@@ -233,6 +238,21 @@ export function createApplicationAwsDeployment(options: ApplicationAwsDeployment
       return applicationAwsDeploymentState(persisted);
     },
   };
+}
+
+function assertApplicationAwsResourceTags(tags: Readonly<Record<string, string>> | undefined): void {
+  if (!tags) return;
+  if (Object.keys(tags).length > 46) {
+    throw new Error("AWS deployment resourceTags may contain at most 46 entries; four framework ownership tags are reserved.");
+  }
+  for (const [key, value] of Object.entries(tags)) {
+    if (!key || key.length > 128 || key.startsWith("aws:") || key.startsWith("applik8s.dev/")) {
+      throw new Error(`AWS deployment resource tag ${JSON.stringify(key)} is invalid or reserved.`);
+    }
+    if (value.length > 256) {
+      throw new Error(`AWS deployment resource tag ${JSON.stringify(key)} exceeds 256 characters.`);
+    }
+  }
 }
 
 function applicationAwsImageProvider(options: ApplicationAwsDeploymentOptions) {

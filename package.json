@@ -227,6 +227,7 @@
     "test:v09:code-agent-local": "APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-code-agent-local.e2e.test.ts",
     "test:v09:builder-live": "APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-builder-opencode-live.e2e.test.ts",
     "test:v09:chirp-aws-local": "node scripts/check-chirp-start-build.mjs && bun run scripts/run-v09-chirp-aws-live.ts",
+    "test:v09:aws-core": "APPLIK8S_E2E_AWS=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-aws-core-live.e2e.test.ts",
     "test:v09:chirp-aws": "node scripts/check-chirp-start-build.mjs && APPLIK8S_E2E_AWS=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-chirp-aws-live.e2e.test.ts",
     "test:v09:chirp-kubernetes": "APPLIK8S_E2E_CHIRP_LIVE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/chirp-start-live.e2e.test.ts",
     "test:v09:agentic-start-browser": "APPLIK8S_E2E_CONTEXT=orbstack bun scripts/run-agentic-product-starter-live.ts",

@@ -497,6 +497,36 @@ describe('v0.8 AWS deployment planning', () => {
     expect(plan.resources.some(({ service }) => service === 'ecs' || service === 'ecr' || service === 'cloudwatch')).toBe(false);
   });
 
+  it('does not provision network or compute foundations for an AWS serverless-provider-only graph', () => {
+    const graph: ApplicationGraph = {
+      ...awsGraph(),
+      nodes: [
+        ...awsGraph().nodes.filter((node) => node.kind === 'provider' && node.interface === 'ObjectStorage'),
+        { id: 'provider.Queue', kind: 'provider', name: 'Queue', stability: 'stable', interface: 'Queue', implementation: 'sqs' },
+        { id: 'provider.EventLog', kind: 'provider', name: 'EventLog', stability: 'stable', interface: 'EventLog', implementation: 'kinesis' },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      target: 'aws',
+      includeApplicationHosts: false,
+      environment: 'qualification',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.resources.map(({ service, resourceType }) => `${service}/${resourceType}`).sort()).toEqual([
+      'kinesis/stream',
+      's3/bucket',
+      'sqs/queue',
+    ]);
+    expect(plan.resources.some(({ service }) => ['ec2', 'ecs', 'ecr', 'cloudwatch'].includes(service))).toBe(false);
+  });
+
   it('requires an HTTP exposure for exported realtime actors and records that routing demand on celld', () => {
     const graph = awsActorGraph();
     const withoutExposure: ApplicationGraph = {

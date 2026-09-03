@@ -8,8 +8,8 @@ import type {
 } from "@applik8s/deployment-contract";
 import { Endpoint } from "@distilled.cloud/aws";
 import { Credentials } from "@distilled.cloud/aws/Credentials";
-import { Region } from "@distilled.cloud/aws/Region";
 import type * as ecs from "@distilled.cloud/aws/ecs";
+import { Region } from "@distilled.cloud/aws/Region";
 import * as secretsmanager from "@distilled.cloud/aws/secrets-manager";
 import * as AWS from "alchemy/AWS";
 import { fromEnvironment as awsCredentialsFromEnvironment } from "alchemy/AWS/Credentials";
@@ -44,6 +44,7 @@ export interface ApplicationAwsNativeResourceDeclaration {
 
 export interface ApplicationAwsNativeMaterializationOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly resourceTags?: Readonly<Record<string, string>>;
   readonly imageUri?: unknown;
   readonly artifactImageUris?: Readonly<Record<string, unknown>>;
   readonly celldWorkerImageUri?: unknown;
@@ -494,7 +495,7 @@ function instantiateNativeResource(
   options: ApplicationAwsNativeMaterializationOptions,
 ): Effect.Effect<Readonly<Record<string, unknown>>, unknown, AWS.Providers> {
   const config = resource.configuration;
-  const tags = applicationTags(plan, resource);
+  const tags = applicationTags(plan, resource, options.resourceTags);
   const vpcId = () => outputValue(outputs, "foundation.network", "vpcId");
   const privateSubnets = () => privateSubnetIds(plan).map((id) => outputValue(outputs, id, "subnetId"));
   const publicSubnets = () => publicSubnetIds(plan).map((id) => outputValue(outputs, id, "subnetId"));
@@ -1906,8 +1907,13 @@ function topologicalPlanResources(plan: ApplicationAwsDeploymentPlan): readonly 
   return ordered;
 }
 
-function applicationTags(plan: ApplicationAwsDeploymentPlan, resource: ApplicationAwsPlanResource): Readonly<Record<string, string>> {
+function applicationTags(
+  plan: ApplicationAwsDeploymentPlan,
+  resource: ApplicationAwsPlanResource,
+  additional: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
   return {
+    ...additional,
     "applik8s.dev/application": plan.application,
     "applik8s.dev/environment": plan.environment,
     "applik8s.dev/resource-id": resource.id,

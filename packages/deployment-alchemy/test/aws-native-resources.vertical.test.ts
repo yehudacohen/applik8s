@@ -1,17 +1,31 @@
 // typecast-file-boundary: native AWS deployment tests inspect deliberately partial provider declarations after lifecycle normalization.
 import {
-  normalizeApplicationAwsDeploymentPlan,
   type ApplicationAwsDeploymentPlan,
   type ApplicationAwsPlanResource,
+  normalizeApplicationAwsDeploymentPlan,
 } from "@applik8s/deployment-contract";
 import { describe, expect, test } from "vitest";
-import { applicationAwsNativeResourceDeclarations } from "../src/index.js";
 import {
   applicationAwsNativeRemovalPolicyForTest,
   applicationAwsNativeWorkloadEnvironmentForTest,
 } from "../src/aws-native-resources.js";
+import { applicationAwsNativeResourceDeclarations, createApplicationAwsDeployment } from "../src/index.js";
 
 describe("AWS native Alchemy resource graph", () => {
+  test("rejects unsafe deployment-wide AWS resource tags before constructing a lifecycle", () => {
+    const plan = fixturePlan();
+    expect(() => createApplicationAwsDeployment({
+      plan,
+      stateRoot: "/tmp/applik8s-invalid-tags",
+      resourceTags: { "applik8s.dev/application": "spoofed" },
+    })).toThrow(/invalid or reserved/u);
+    expect(() => createApplicationAwsDeployment({
+      plan,
+      stateRoot: "/tmp/applik8s-invalid-tags",
+      resourceTags: Object.fromEntries(Array.from({ length: 47 }, (_, index) => [`Tag${index}`, "value"])),
+    })).toThrow(/at most 46/u);
+  });
+
   test("maps each portable resource to a concrete Alchemy resource identity", () => {
     const declarations = applicationAwsNativeResourceDeclarations(fixturePlan());
     expect(declarations).toEqual(expect.arrayContaining([

@@ -3,8 +3,8 @@
 import {
   type ApplicationCommandHandlerNode,
   type ApplicationGraph,
-  type ApplicationImplementationPlan,
   type ApplicationGraphNode,
+  type ApplicationImplementationPlan,
   type ApplicationLakehousePublicationNode,
   type ApplicationModelNode,
   type ApplicationProcessorNode,
@@ -32,6 +32,7 @@ import {
 import { isAwsRuntimeAccessSecurityGroupQualified, validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import { applicationCelldRuntimeRelease } from './celld-runtime-artifact.js';
 import { applicationDeploymentGraphForImplementationPlan } from './implementation-plan-graph.js';
+import { materializeInstallationValue } from './installation-materialization.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationDeploymentRuntimeAccessTargetRecord,
@@ -45,7 +46,6 @@ import {
   compileApplicationRuntimeAccessPlan,
 } from './runtime-access-plan.js';
 import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
-import { materializeInstallationValue } from './installation-materialization.js';
 
 const awsHatchetImage = 'ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:5405c7f3991e85b7490b4e9fd7187bf5699f7cdd5b6e0c9a751751164b801aa9';
 const awsHatchetTenantId = '707d0855-80ab-4e1f-a156-f1c4546cbf52';
@@ -113,8 +113,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
 
   const zones = request.availabilityZones?.length ? [...request.availabilityZones] : [`${request.region}a`, `${request.region}b`];
   if (zones.length < 2) throw new Error('AWS production planning requires at least two availability zones.');
-  const requiresNetworkFoundation = request.target !== 'aws-local'
-    || request.includeApplicationHosts !== false
+  const requiresNetworkFoundation = request.includeApplicationHosts !== false
     || (request.runtimeArtifacts ?? []).length > 0
     || request.graph.nodes.some((node) => node.kind === 'provider' && [
       'TransactionalDatabase',
@@ -204,8 +203,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     }, undefined, 'private', ['namespaceId', 'namespaceArn']));
     connect({ from: 'foundation.network', to: 'foundation.discovery', relationship: 'requiresReady' });
   }
-  const requiresComputeFoundation = request.target !== 'aws-local'
-    || request.includeApplicationHosts !== false
+  const requiresComputeFoundation = request.includeApplicationHosts !== false
     || (request.runtimeArtifacts ?? []).length > 0
     || request.graph.nodes.some((node) => node.kind === 'provider' && [
       'ActorRuntime',
