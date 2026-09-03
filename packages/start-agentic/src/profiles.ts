@@ -1770,7 +1770,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/ai',
           export: 'AI.deterministic',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/runtime-ai',
         readiness: 'applik8s.ai.deterministic.readiness/v1alpha1',
@@ -1799,7 +1799,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/ai',
           export: 'AI.envoy',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/runtime-ai',
         deploymentContributor: '@applik8s/deployment-typekro/providers/envoy-ai-gateway',
@@ -1825,7 +1825,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/applik8s',
           export: 'IdentityProvider.from',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/start-agentic/identity-runtime',
         readiness: 'applik8s.identity.agentic-starter.readiness/v1alpha1',
@@ -1852,7 +1852,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/billing',
           export: 'LocalPayments.simulated',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/billing/runtime',
         readiness: 'applik8s.billing.local.readiness/v1alpha1',
@@ -1881,7 +1881,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/notifications',
           export: 'LocalNotificationDelivery.inspectable',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/notifications/runtime',
         readiness: 'applik8s.notifications.local.readiness/v1alpha1',
@@ -1910,7 +1910,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/web-search-searxng',
           export: 'SearxngWebSearch.managed',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/web-search-searxng/runtime',
         deploymentContributor: '@applik8s/deployment-typekro/providers/searxng',
@@ -1943,7 +1943,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/web-search',
           export: 'LocalWebSearch.deterministic',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/web-search/runtime',
         readiness: 'applik8s.web-search.deterministic.readiness/v1alpha1',
@@ -1966,7 +1966,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/web-retrieval-http',
           export: 'BoundedHttpSourceRetriever.create',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/web-retrieval-http/runtime',
         readiness: 'applik8s.source-retriever.http.readiness/v1alpha1',
@@ -1990,7 +1990,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/web-search',
           export: 'LocalSourceRetriever.deterministic',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/web-search/source-runtime',
         readiness: 'applik8s.source-retriever.deterministic.readiness/v1alpha1',
@@ -2022,7 +2022,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/research',
           export: 'PostgresResearchEvidence.create',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/research/postgres-runtime',
         readiness: 'applik8s.research-evidence.postgres.readiness/v1alpha1',
@@ -2060,7 +2060,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/research',
           export: 'LocalResearchEvidence.deterministic',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/research/runtime',
         readiness: 'applik8s.research-evidence.deterministic.readiness/v1alpha1',
@@ -2087,7 +2087,7 @@ export function agenticProfilesWith(
         provider: {
           package: '@applik8s/applik8s',
           export: 'Observability.clickStack',
-          version: '0.9.0-alpha.1',
+          version: '0.9.0',
         },
         runtimeAdapter: '@applik8s/runtime-otel',
         deploymentContributor: '@applik8s/deployment-typekro/providers/clickstack',

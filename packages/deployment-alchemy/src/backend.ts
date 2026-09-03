@@ -60,6 +60,7 @@ import {
   applicationAlchemyStackIdentity,
 } from "./identity.js";
 import { claimApplicationAlchemyStackIdentity } from "./identity-registry.js";
+import type { ApplicationAlchemyLease } from "./lease.js";
 import { withDeploymentLease } from "./deployment-lease.js";
 import { assertApplicationAlchemyDestroyCompleted } from "./destroy-state.js";
 import { runApplicationAlchemyEffect } from "./runtime.js";
@@ -79,6 +80,8 @@ export interface ApplicationAlchemyDeploymentOptions {
   readonly stage?: string;
   readonly owner?: string;
   readonly leaseTtlMs?: number;
+  /** @internal Operation-wide lease supplied by deployment migration. */
+  readonly lease?: ApplicationAlchemyLease;
   readonly profile?: string;
   readonly adopt?: boolean;
   readonly dev?: boolean;

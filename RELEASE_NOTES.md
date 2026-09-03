@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.9.0-alpha.1 (in development)
+## v0.9.0 (in development)
 
 The semantic-completion foundation now defines provider-neutral effect
 contracts and append-only receipts in `@applik8s/operations`. Providers state
@@ -9,10 +9,14 @@ compensation guarantees; managed runtimes preserve one logical identity and
 represent interrupted provider acceptance as an honest unknown outcome until
 observation or authorized operator disposition resolves it.
 
-A machine-readable foundation gate records the exact released-v0.8 baseline
-required for active-state migration. Because v0.8 has not yet been published,
-the gate deliberately blocks v0.9 deployment-state writes while allowing
-non-mutating contract work to proceed against the identified source candidate.
+A machine-readable foundation gate records v0.7.1 as the exact released
+active-state migration baseline. The unpublished v0.8 engineering line is
+included in v0.9 rather than presented as a fictional release. Deployment-state
+writes use an exact v0.7.1 compatibility decoder, durable migration state,
+and one operation-wide Alchemy lease. The executable release fixture extracts
+the immutable v0.7.1 tag and proves direct and KRO in-place UID preservation,
+target readiness, and TypeKro-owned deletion before v0.9 release evidence is
+accepted.
 The same gate consumes a generated public-contract inventory derived from all
 publishable package manifests, export maps, TypeScript module exports, and
 typed diagnostic positions instead of maintaining a second manual API list.
@@ -33,13 +37,14 @@ and cleanup deadlines settle even when user callbacks ignore cancellation;
 unsafe evidence fails closed and is never returned.
 
 Deployment migration now has a versioned, deterministic read-only proposal in
-`@applik8s/core`. It accepts only an exact v0.8 release record matching the
+`@applik8s/core`. It accepts only an exact release record matching the
 loaded codec, maps every legacy node by semantic and canonical physical
 identity, and explains fenced handoff, migration-exclusive replacement,
 retirement, retained data, shared ownership, and external bindings. Ambiguous
-or incompatible mappings remain blocked with `mutationAuthorized: false`;
-provider mutation stays globally disabled until an actual v0.8 release
-baseline is available and qualified.
+or incompatible mappings remain blocked with `mutationAuthorized: false`.
+The deployment CLI now requires the explicit `--migrate-from 0.7.1`
+acknowledgement, preserves the exact source graph before compilation replaces
+it, and resumes interrupted handoff from compare-and-swap state.
 
 Canonical `ApplicationPlan` artifacts can now embed the recursive concrete
 implementation plan selected by profile DI. Capability resolutions link to
@@ -58,7 +63,11 @@ contracts, and migration safety, and is enforced by `check:v09:docs`. This
 closes the documentation-skeleton gate; clean-context alpha.1 review remains
 independently open.
 
-## v0.8.0
+### Included unreleased v0.8 engineering line
+
+The capabilities below were developed under the v0.8 milestone but were never
+published as v0.8.0. They ship as part of v0.9.0 and do not establish a v0.8
+compatibility or migration baseline.
 
 Search projection synchronization now distinguishes filtered change-source
 pages from direct change application. A source page may contain gaps from
@@ -115,8 +124,8 @@ an unrelated root Application CRD spec. Agentic Start also accepts custom,
 non-empty inference Secret keys and carries the selected key into both managed
 and external Envoy AI Gateway bindings.
 
-- Release automation now separates cluster-free local qualification from
-  target-live actor qualification and requires a v0.8-specific exact-commit
+- The inherited release automation separates cluster-free local qualification from
+  target-live actor qualification and originally required an unreleased-v0.8 exact-commit
   evidence packet. The packet independently binds real AWS, Cilium-enforced
   Kubernetes, ClickStack/scheduling/Celld lifecycle, anonymous multi-architecture
   Celld operator image, and generated-product browser receipts; the tagged
@@ -183,7 +192,7 @@ DuckDB server runtimes external at their package boundary. A portable gateway
 therefore loads the selected provider without embedding every provider SDK in
 the relational web artifact.
 
-v0.8.0 makes one semantic application graph portable across local, AWS-local,
+The unreleased v0.8 engineering line made one semantic application graph portable across local, AWS-local,
 AWS, and Kubernetes targets. It adds the canonical ApplicationPlan, persistent
 local supervision and Builder portal, Alchemy-owned AWS deployment, inferred
 runtime access, provider-neutral OpenTelemetry, function-native schedules,
@@ -192,9 +201,9 @@ and celld runtimes. Agentic Start, Chirp, and GuestBook remain the maintained
 acceptance applications. Real-target qualification remains mandatory before
 the release is tagged or published.
 
-The candidate now includes fail-closed plan serialization, known-secret
+That engineering candidate included fail-closed plan serialization, known-secret
 canaries across canonical/AWS plans and the independent Builder, a released
-v0.7.1 source-and-export migration fixture, and a v0.8-specific synthetic
+v0.7.1 source-and-export migration fixture, and an engineering-line-specific synthetic
 performance/cost history. Those are local evidence only: retained-data
 OrbStack migration, MiniStack, real AWS, and distributed celld qualification
 remain explicit release blockers until exact-commit live evidence exists.

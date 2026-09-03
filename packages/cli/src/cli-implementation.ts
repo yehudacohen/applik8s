@@ -329,6 +329,7 @@ function createProgram(io: CliIo): Command {
     .option('--connection-bindings <path>', 'JSON operator-to-alias connection bindings')
     .option('--instance <path>', 'explicit Application instance YAML')
     .option('--skip-app-build', 'skip the application package build')
+    .option('--migrate-from <release>', 'acknowledge the exact active deployment release (currently 0.7.1)')
     .option(
       '--acknowledge <token>',
       'acknowledge one exact installation-scoped destructive profile transition',
@@ -337,6 +338,7 @@ function createProgram(io: CliIo): Command {
     )
     .action(async (entrypoint: string | undefined, options: ApplicationPlanCliOptions) => {
       assertDeploymentStrategy(options.strategy);
+      assertMigrationSourceRelease(options.migrateFrom);
       if (options.target !== undefined) {
         throw new Error('LEGACY_TARGET_SELECTOR_FORBIDDEN: applik8s plan selects implementations exclusively through --profile.');
       }
@@ -429,6 +431,7 @@ function createProgram(io: CliIo): Command {
       '--allow-breaking-changes',
       'allow one reviewed TypeKro root-schema migration for this deployment only',
     )
+    .option('--migrate-from <release>', 'acknowledge the exact active deployment release (currently 0.7.1)')
     .option(
       '--acknowledge <token>',
       'acknowledge one exact installation-scoped destructive profile transition',
@@ -440,6 +443,7 @@ function createProgram(io: CliIo): Command {
     .addOption(new Option('--plan-diff <path>').hideHelp())
     .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
       assertDeploymentStrategy(options.strategy);
+      assertMigrationSourceRelease(options.migrateFrom);
       if (options.target !== undefined) {
         throw new Error('LEGACY_TARGET_SELECTOR_FORBIDDEN: applik8s deploy selects implementations exclusively through --profile.');
       }
@@ -652,6 +656,14 @@ function assertDeploymentStrategy(value: string | undefined): asserts value is '
   if (value !== undefined && value !== 'direct' && value !== 'kro') {
     throw new Error(
       `applik8s deploy --strategy must be "direct" or "kro", received ${JSON.stringify(value)}.`,
+    );
+  }
+}
+
+function assertMigrationSourceRelease(value: string | undefined): asserts value is '0.7.1' | undefined {
+  if (value !== undefined && value !== '0.7.1') {
+    throw new Error(
+      `V09_MIGRATION_SOURCE_RELEASE_UNQUALIFIED: --migrate-from supports only the exact released baseline 0.7.1, received ${JSON.stringify(value)}.`,
     );
   }
 }

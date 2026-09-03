@@ -1,7 +1,50 @@
+// typecast-file-boundary: persisted identity claims are unknown JSON until the complete versioned structural checks below establish their narrow protocol shape.
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationAlchemyStackIdentity } from "./identity.js";
+
+export interface ApplicationAlchemyStackIdentityClaim {
+  readonly version: 1 | 2;
+  readonly key: string;
+  readonly digest: string;
+  readonly canonical: string;
+  readonly strategy?: string;
+}
+
+/** Reads an identity claim without upgrading or otherwise mutating it. */
+export async function inspectApplicationAlchemyStackIdentityClaim(
+  root: string,
+  stack: ApplicationAlchemyStackIdentity,
+): Promise<ApplicationAlchemyStackIdentityClaim | undefined> {
+  const path = join(root, "identities", `${stack.key}.json`);
+  const existing = await readFile(path, "utf8").then((source) => JSON.parse(source) as unknown).catch((cause: unknown) => {
+    if (errorCode(cause) === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (existing === undefined) return undefined;
+  if (
+    !existing
+    || typeof existing !== "object"
+    || (Reflect.get(existing, "version") !== 1 && Reflect.get(existing, "version") !== 2)
+    || typeof Reflect.get(existing, "key") !== "string"
+    || typeof Reflect.get(existing, "digest") !== "string"
+    || typeof Reflect.get(existing, "canonical") !== "string"
+  ) {
+    throw new Error(`Alchemy Stack identity claim ${path} is corrupt.`);
+  }
+  const strategy = Reflect.get(existing, "strategy");
+  if (strategy !== undefined && typeof strategy !== "string") {
+    throw new Error(`Alchemy Stack identity claim ${path} has an invalid strategy.`);
+  }
+  return {
+    version: Reflect.get(existing, "version") as 1 | 2,
+    key: String(Reflect.get(existing, "key")),
+    digest: String(Reflect.get(existing, "digest")),
+    canonical: String(Reflect.get(existing, "canonical")),
+    ...(strategy ? { strategy } : {}),
+  };
+}
 
 export async function claimApplicationAlchemyStackIdentity(
   root: string,

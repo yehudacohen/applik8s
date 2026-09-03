@@ -881,7 +881,7 @@ const compiled = await compileTypeKroComposition({
   entrypoint: applicationPath,
   compositionName: 'httpProviderStack',
   outDir: join(${JSON.stringify(consumerDir)}, 'packed-http-build'),
-  runtimeVersionRange: '^0.8.0',
+  runtimeVersionRange: '^0.9.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',
   portability: {
@@ -1107,7 +1107,7 @@ const compiled = await compileTypeKroComposition({
   entrypoint: applicationPath,
   compositionName: 'scheduleProviderStack',
   outDir: join(${JSON.stringify(packedScheduleDirectory)}, 'build'),
-  runtimeVersionRange: '^0.8.0',
+  runtimeVersionRange: '^0.9.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',
   portability: {
@@ -1129,7 +1129,7 @@ const deployment = await emitApplicationDeploymentGraph({
   projectRoot: ${JSON.stringify(packedScheduleDirectory)},
   graph,
   sourceGraphDigest: 'sha256:' + 'a'.repeat(64),
-  compilerVersion: '0.8.0',
+  compilerVersion: '0.9.0',
   context: 'packed-consumer',
   controlPlaneNamespace: 'applik8s-system',
   instance: 'packed-schedule-provider',
@@ -1421,7 +1421,7 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   await createApplicationAgenticStart({
     targetDirectory: agenticStartTarget,
     projectName: 'packed-agentic-start',
-    applik8sVersion: '0.8.0',
+    applik8sVersion: '0.9.0',
     install: false,
     async run(command) {
       if (

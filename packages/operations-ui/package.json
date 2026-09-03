@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/operations-ui",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Maintained, authority-preserving operations queries and React control-center surfaces for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -43,19 +43,19 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/approvals": "0.8.0",
-    "@applik8s/artifacts": "0.8.0",
-    "@applik8s/client": "0.8.0",
-    "@applik8s/conversations": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/evals": "0.8.0",
-    "@applik8s/usage": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/approvals": "0.9.0",
+    "@applik8s/artifacts": "0.9.0",
+    "@applik8s/client": "0.9.0",
+    "@applik8s/conversations": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/evals": "0.9.0",
+    "@applik8s/usage": "0.9.0",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   },
   "peerDependencies": {
-    "@applik8s/react": "0.8.0",
+    "@applik8s/react": "0.9.0",
     "react": ">=18.3.0 <20"
   }
 }

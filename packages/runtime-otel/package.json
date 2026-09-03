@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-otel",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "OpenTelemetry instrumentation and OTLP export runtime for Applik8s managed boundaries.",
   "license": "Apache-2.0",
   "type": "module",
@@ -9,8 +9,8 @@
   "repository": { "type": "git", "url": "git+https://github.com/yehudacohen/applik8s.git", "directory": "packages/runtime-otel" },
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" } },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/core": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/core": "0.9.0",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/api-logs": "0.221.0",
     "@opentelemetry/exporter-logs-otlp-http": "0.221.0",

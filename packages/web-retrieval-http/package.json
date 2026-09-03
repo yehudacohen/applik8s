@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/web-retrieval-http",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Server-only bounded public HTTP source retrieval with DNS-pinned SSRF protection for Applik8s research agents.",
   "license": "Apache-2.0",
   "type": "module",
@@ -24,6 +24,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/web-search": "0.8.0"
+    "@applik8s/web-search": "0.9.0"
   }
 }

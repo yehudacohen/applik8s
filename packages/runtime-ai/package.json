@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-ai",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Bounded server runtime for Applik8s agent executions, native TanStack AI tools, and durable attempt identity.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,11 +23,11 @@
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.8.0",
-    "@applik8s/ai-tanstack": "0.8.0",
-    "@applik8s/client": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/operations": "0.8.0",
+    "@applik8s/ai": "0.9.0",
+    "@applik8s/ai-tanstack": "0.9.0",
+    "@applik8s/client": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/operations": "0.9.0",
     "@tanstack/ai": "0.45.1",
     "@tanstack/ai-openai": "0.19.1",
     "postgres": "^3.4.7"

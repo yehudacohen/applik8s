@@ -1,0 +1,45 @@
+---
+title: v0.7.1 to v0.9 migration
+description: Upgrade an active v0.7.1 Alchemy deployment to v0.9 under one fenced lifecycle authority.
+---
+
+v0.9 supports the direct release jump from the actual latest public release, v0.7.1. There is no public
+v0.8 migration hop. The upgrade reads the active v0.7.1 deployment graph and Alchemy state, writes a
+deterministic proposal, acquires the same complete stack-identity lease, and reconciles the v0.9 graph in
+place.
+
+The checked-in baseline records the exact v0.7.1 package, tag, graph schema, absence of an ApplicationPlan,
+provider-catalog fingerprint, runtime protocol versions, and evidence-manifest digest. The executable release
+fixture checks out the exact tag, creates both direct and KRO deployments with their released dependencies,
+then proves that v0.9 preserves live resource UIDs, observes the updated desired state, and deletes through
+TypeKro/Alchemy rather than an out-of-band lifecycle engine.
+
+Preview the upgrade first:
+
+```bash
+applik8s plan src/app.ts \
+  --context <context> \
+  --migrate-from 0.7.1
+```
+
+Then run the same acknowledged handoff:
+
+```bash
+applik8s deploy src/app.ts \
+  --context <context> \
+  --migrate-from 0.7.1
+```
+
+The flag is intentionally exact. Compiler version `0.6.0` was shared by the v0.7 line, so Applik8s cannot
+infer that an active deployment came from v0.7.1 merely from its graph. If the graph and Alchemy identity/state
+pair are incomplete, the command fails before provider mutation. If a prior attempt was interrupted, the
+preserved source snapshot and durable migration run resume under the same stack lease.
+
+The proposal maps each legacy node by semantic identity and canonical physical identity, then explains one
+of: preserve, adopt, replace, retire, retain, or external. Ambiguity, provider incompatibility, unsafe
+ownership, and retained-data drift remain blocked.
+
+The unpublished v0.8 engineering line remains historical design and test evidence. It is not a supported
+migration origin and does not appear in the public release lineage. A GitOps-only installation that has no
+Alchemy identity/state pair is not silently adopted by this command; render its v0.9 manifests in a separate
+reviewed change and follow the controller-specific lifecycle procedure for that installation.

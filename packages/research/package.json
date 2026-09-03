@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/research",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Provider-neutral durable research evidence, citation provenance, and specialized research-agent composition for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -34,12 +34,12 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/ai": "0.8.0",
-    "@applik8s/ai-tanstack": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/sdk": "0.8.0",
-    "@applik8s/web-search": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/ai": "0.9.0",
+    "@applik8s/ai-tanstack": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/sdk": "0.9.0",
+    "@applik8s/web-search": "0.9.0",
     "@tanstack/ai": "0.45.1",
     "arktype": "2.2.1",
     "postgres": "^3.4.7"

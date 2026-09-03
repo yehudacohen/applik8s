@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-contract",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Portable deployment graph contracts for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,7 +16,7 @@
     "directory": "packages/deployment-contract"
   },
   "dependencies": {
-    "@applik8s/core": "0.8.0"
+    "@applik8s/core": "0.9.0"
   },
   "exports": {
     ".": {

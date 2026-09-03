@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -308,17 +308,17 @@
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.8.0",
-    "@applik8s/ai-tanstack": "0.8.0",
-    "@applik8s/client": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/deployment-contract": "0.8.0",
-    "@applik8s/identity": "0.8.0",
-    "@applik8s/operations": "0.8.0",
-    "@applik8s/runtime": "0.8.0",
-    "@applik8s/sdk": "0.8.0",
-    "@applik8s/typekro-adapter": "0.8.0",
-    "@applik8s/typetainer": "0.8.0",
+    "@applik8s/ai": "0.9.0",
+    "@applik8s/ai-tanstack": "0.9.0",
+    "@applik8s/client": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/deployment-contract": "0.9.0",
+    "@applik8s/identity": "0.9.0",
+    "@applik8s/operations": "0.9.0",
+    "@applik8s/runtime": "0.9.0",
+    "@applik8s/sdk": "0.9.0",
+    "@applik8s/typekro-adapter": "0.9.0",
+    "@applik8s/typetainer": "0.9.0",
     "arktype": "2.2.1",
     "drizzle-arktype": "0.1.3",
     "drizzle-orm": "^0.45.1",
@@ -327,12 +327,12 @@
     "typekro": "0.33.10"
   },
   "peerDependencies": {
-    "@applik8s/runtime-aws": "0.8.0",
-    "@applik8s/runtime-hatchet": "0.8.0",
-    "@applik8s/runtime-nats": "0.8.0",
-    "@applik8s/runtime-kubernetes": "0.8.0",
-    "@applik8s/runtime-opensearch": "0.8.0",
-    "@applik8s/runtime-postgres": "0.8.0"
+    "@applik8s/runtime-aws": "0.9.0",
+    "@applik8s/runtime-hatchet": "0.9.0",
+    "@applik8s/runtime-nats": "0.9.0",
+    "@applik8s/runtime-kubernetes": "0.9.0",
+    "@applik8s/runtime-opensearch": "0.9.0",
+    "@applik8s/runtime-postgres": "0.9.0"
   },
   "peerDependenciesMeta": {
     "@applik8s/runtime-aws": {

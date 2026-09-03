@@ -13,6 +13,41 @@ const AccountChanged = stream('accounts.changed.v1', {
 });
 
 describe('v0.6 streams, subscriptions, and projections', () => {
+  it('reuses a model lifecycle stream when the same fact enters the event catalog', () => {
+    const records = pgTable('catalog_lifecycle_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('catalog-lifecycle-reuse');
+    const database = application.database.postgres('catalog', { schema: { records } });
+    const Record = application.model(records, { name: 'Record', database });
+
+    Record.on.create(
+      'observe-record-create',
+      { processor: { replicas: 1, concurrency: 1 } },
+      async function observeRecordCreate(created) {
+        void created.identity;
+      },
+    );
+    application.events.from(Record);
+
+    const lifecycleStreams = applicationGraphFor(application.composition)?.nodes.filter(
+      (node) => node.kind === 'stream' && node.name === 'models.Record.created',
+    );
+    expect(lifecycleStreams).toHaveLength(1);
+    expect(applicationGraphFor(application.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'streamProcessor',
+        name: 'observe-record-create',
+        source: { nodeId: 'stream.models.record.created.v1' },
+      }),
+      expect.objectContaining({
+        kind: 'stream',
+        catalog: expect.objectContaining({ selection: 'from' }),
+      }),
+    ]));
+  });
+
   it('builds a revision-pinned event catalog over explicit and model lifecycle facts', () => {
     const posts = pgTable('catalog_posts', {
       id: text('id').primaryKey(),

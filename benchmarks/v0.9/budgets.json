@@ -1,0 +1,22 @@
+{
+  "jobs": {
+    "minimumThroughput": 100,
+    "maximumP95Ms": 25,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "events": {
+    "minimumThroughput": 25,
+    "maximumP95Ms": 75,
+    "maximumRssGrowthBytes": 268435456
+  },
+  "managedModels": {
+    "minimumThroughput": 250,
+    "maximumP95Ms": 15,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "queryBatches": {
+    "minimumThroughput": 25,
+    "maximumP95Ms": 75,
+    "maximumRssGrowthBytes": 134217728
+  }
+}

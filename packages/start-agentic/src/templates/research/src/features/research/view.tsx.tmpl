@@ -1,8 +1,9 @@
-import { hydrateApplicationConversationMessage } from '@applik8s/ai-tanstack/client';
+import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { AgenticStartOnboarding } from '@applik8s/start-agentic/react';
 import type { MessagePart } from '@tanstack/ai';
+import { useChat } from '@tanstack/ai-react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   Conversation,
   ConversationDetail,
@@ -79,10 +80,17 @@ export function ResearchConversation({
   const detail = ConversationDetail({ conversationId }).useQuery();
   const updateConversation = Conversation.update.useMutation();
   const navigate = useNavigate();
+  const connection = useMemo(
+    () => createApplicationTanStackConnection({ agent: Researcher }),
+    [],
+  );
+  const { messages, sendMessage, isLoading, error: chatError, stop } = useChat({
+    connection,
+    threadId: conversationId,
+    persistence: true,
+  });
   const [draft, setDraft] = useState('');
   const [title, setTitle] = useState('');
-  const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<Awaited<ReturnType<typeof Researcher>>>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -93,21 +101,13 @@ export function ResearchConversation({
     event.preventDefault();
     const message = draft.trim();
     if (!message) return;
-    setPending(true);
     setError(undefined);
+    setDraft('');
     try {
-      const invocationId = crypto.randomUUID();
-      const terminal = await Researcher(
-        { threadId: conversationId, question: message },
-        { idempotencyKey: `${conversationId}:${invocationId}` },
-      );
-      setResult(terminal);
-      setDraft('');
+      await sendMessage(message);
       await detail.refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setPending(false);
     }
   }
 
@@ -163,25 +163,18 @@ export function ResearchConversation({
         </form>
       ) : null}
       <section aria-label="Research result" aria-live="polite">
-        {pending ? <p>Searching, retrieving, recording evidence, and preparing the artifact…</p> : null}
-        {result ? <ResearchTerminalResult result={result} /> : null}
-        {error ? <p role="alert">{error}</p> : null}
+        {isLoading ? <p>Searching, retrieving, recording evidence, and preparing the artifact…</p> : null}
+        {error || chatError ? <p role="alert">{error ?? chatError?.message}</p> : null}
       </section>
       <section aria-label="Research conversation">
-        {detail.data?.messages.map((message) => {
-          if (isResearchTerminalResult(message.content)) {
-            return <ResearchTerminalResult key={message.id} result={message.content} />;
-          }
-          const hydrated = hydrateApplicationConversationMessage(message);
-          return (
-            <article key={message.id} data-role={hydrated.role}>
-              <strong>{hydrated.role}</strong>
-              {hydrated.parts.map((part, index) => (
+        {messages.map((message) => (
+            <article key={message.id} data-role={message.role}>
+              <strong>{message.role}</strong>
+              {message.parts.map((part, index) => (
                 <ResearchMessagePart key={index} part={part} />
               ))}
             </article>
-          );
-        })}
+        ))}
       </section>
       <form onSubmit={submit}>
         <label htmlFor="research-prompt">Research prompt</label>
@@ -189,52 +182,14 @@ export function ResearchConversation({
           id="research-prompt"
           value={draft}
           onChange={(event) => setDraft(event.currentTarget.value)}
-          disabled={pending}
+          disabled={isLoading}
         />
-        <button type="submit" disabled={pending || !draft.trim()}>
-          {pending ? 'Researching…' : 'Research and publish'}
+        <button type="submit" disabled={isLoading || !draft.trim()}>
+          {isLoading ? 'Researching…' : 'Research and publish'}
         </button>
+        {isLoading ? <button type="button" onClick={stop}>Stop</button> : null}
       </form>
     </main>
-  );
-}
-
-function ResearchTerminalResult({
-  result,
-}: {
-  readonly result: Awaited<ReturnType<typeof Researcher>> | unknown;
-}) {
-  const value = objectValue(result);
-  const status = typeof value?.status === 'string' ? value.status : 'failed';
-  const output = objectValue(value?.value);
-  const artifact = objectValue(value?.artifact);
-  const evidenceIds = stringArray(value?.evidenceIds);
-  const reason = typeof value?.reason === 'string' ? value.reason : 'The research run returned an invalid terminal result.';
-  if (status === 'completed') return (
-    <article data-status="completed">
-      <p className="eyebrow">Published research</p>
-      <h2>Grounded artifact ready</h2>
-      <p>{typeof output?.body === 'string' ? output.body : 'The grounded result was published.'}</p>
-      <p>Artifact {typeof artifact?.id === 'string' ? artifact.id : 'unknown'} · {evidenceIds.length} evidence records</p>
-    </article>
-  );
-  if (status === 'partial') return (
-    <article data-status="partial">
-      <p className="eyebrow">Partial research</p>
-      <h2>Evidence retained; publication needs attention</h2>
-      {typeof output?.body === 'string' ? <p>{output.body}</p> : null}
-      <p>{reason}</p>
-      <ul>{stringArray(value?.unresolvedClaims).map(claim => <li key={claim}>{claim}</li>)}</ul>
-      <p>{evidenceIds.length} evidence records retained for retry.</p>
-    </article>
-  );
-  return (
-    <article data-status="failed">
-      <p className="eyebrow">Research failed safely</p>
-      <h2>No completed report was claimed</h2>
-      <p>{reason}</p>
-      <p>{evidenceIds.length} evidence records were retained.</p>
-    </article>
   );
 }
 
@@ -244,23 +199,4 @@ function ResearchMessagePart({ part }: { readonly part: MessagePart }) {
   if (part.type === 'tool-result') return <p>Tool result: {part.error ? 'failed' : part.state}</p>;
   if (part.type === 'thinking') return <p>Planning the next step…</p>;
   return <p>Recorded agent activity.</p>;
-}
-
-function isResearchTerminalResult(value: unknown): boolean {
-  const record = objectValue(value);
-  return record?.status === 'completed'
-    || record?.status === 'partial'
-    || record?.status === 'failed';
-}
-
-function objectValue(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : undefined;
-}
-
-function stringArray(value: unknown): readonly string[] {
-  return Array.isArray(value) && value.every(item => typeof item === 'string')
-    ? value
-    : [];
 }

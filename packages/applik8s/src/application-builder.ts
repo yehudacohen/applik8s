@@ -5227,13 +5227,17 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           ),
         });
         const modelEventSources = Object.values(promotedFacet.events).map((definition) => {
-          let stream: ApplicationStreamBinding<object> | undefined;
+          let stream = state.modelLifecycleStreams.get(definition.id);
           const source: ApplicationEventCatalogSource = {
             definition,
             database: databaseBinding,
             producer: { kind: 'model', id: promotedFacet.name },
             stream() {
-              stream ??= registerScopedStream(definition, applicationCatalogSourceOptions(source));
+              stream ??= state.modelLifecycleStreams.get(definition.id);
+              if (!stream) {
+                stream = registerScopedStream(definition, applicationCatalogSourceOptions(source));
+                state.modelLifecycleStreams.set(definition.id, stream);
+              }
               return stream;
             },
           };

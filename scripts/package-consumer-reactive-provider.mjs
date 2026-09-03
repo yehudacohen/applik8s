@@ -178,7 +178,7 @@ const compiled = await compileTypeKroComposition({
   entrypoint: applicationPath,
   compositionName: 'reactiveProviderStack',
   outDir: join(${JSON.stringify(consumerDir)}, 'packed-reactive-build'),
-  runtimeVersionRange: '^0.8.0',
+  runtimeVersionRange: '^0.9.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',
   portability: {

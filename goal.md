@@ -58,7 +58,7 @@ deployment machinery.
      quickstart, primitive decision guide, explain/plan, troubleshooting, and
      upgrades.
    - Freeze public names, package boundaries, diagnostics, maturity labels,
-     graph/plan/artifact compatibility, and the resumable v0.8 state migration.
+     graph/plan/artifact compatibility, and the resumable v0.7.1-to-v0.9 state migration.
    - Qualify clean consumers, local lifecycle, OrbStack, maintained deployed
      providers, security/failure injection, package artifacts, performance/cost
      history, examples, and independent review.

@@ -112,7 +112,7 @@
     },
     "docs-site": {
       "name": "@applik8s/docs-site",
-      "version": "0.9.0-alpha.1",
+      "version": "0.9.0",
       "dependencies": {
         "@astrojs/starlight": "0.41.10",
         "astro": "7.2.9",

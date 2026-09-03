@@ -60,7 +60,7 @@ export default defineConfig({
         },
         {
           label: 'Upgrade & Migrate',
-          items: [{ label: 'v0.8 to v0.9', slug: 'upgrade/v08-to-v09' }],
+          items: [{ label: 'v0.7.1 to v0.9', slug: 'upgrade/v071-to-v09' }],
         },
       ],
     }),

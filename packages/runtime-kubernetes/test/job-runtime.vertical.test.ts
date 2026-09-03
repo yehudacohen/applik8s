@@ -281,6 +281,13 @@ describe('Kubernetes finite Job dispatcher', () => {
       applicationId: 'reports',
       deploymentId: 'production',
       namespace: 'reports-system',
+      image: `sha256:${'f'.repeat(64)}`,
+      api: fakeBatchApi().api,
+    })).resolves.toBeDefined();
+    await expect(createKubernetesApplicationJobDispatcher({
+      applicationId: 'reports',
+      deploymentId: 'production',
+      namespace: 'reports-system',
       image: 'registry.example.test/applik8s/jobs:latest',
       api: fakeBatchApi().api,
     })).rejects.toThrow(/immutable sha256 digest/u);

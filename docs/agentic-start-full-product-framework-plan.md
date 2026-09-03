@@ -649,9 +649,11 @@ service, test it, compare evaluations, and publish the exact winning revision.
 3. Shrink and document the generated source.
 4. Add generator update/conflict tests and an example custom vertical slice.
 5. Re-run source budgets, packed-consumer generation, and lineage checks.
-6. Enforce the default-product budget of at most 50 generated source files and
-   3,000 generated application-owned lines, with an allowlisted and reviewed
-   explanation for every exception.
+6. Enforce the reviewed default-product ownership budget in
+   `docs/v07-agentic-start-source-budget.json`: 57 application-behavior files
+   and 7,650 application-owned nonblank lines, plus separate exact category and
+   route/design ceilings. Every increase and every per-file exception requires
+   an application-specific ownership explanation.
 
 Milestone E is a horizontal constraint, not a cleanup postponed until after the
 screens are built. Every slice in Milestones B through D must land in its

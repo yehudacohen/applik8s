@@ -17,7 +17,9 @@ export {
   sameApplicationAlchemyStackIdentity,
 } from "./identity.js";
 export {
+  type ApplicationAlchemyStackIdentityClaim,
   claimApplicationAlchemyStackIdentity,
+  inspectApplicationAlchemyStackIdentityClaim,
 } from "./identity-registry.js";
 export {
   type ApplicationAlchemyLease,
@@ -25,14 +27,19 @@ export {
   acquireApplicationAlchemyLease,
 } from "./lease.js";
 export {
+  withApplicationAlchemyDeploymentLease,
+} from "./deployment-lease.js";
+export {
   type ApplicationAlchemyRuntimeOptions,
   applicationAlchemyRuntimeEffect,
   runApplicationAlchemyEffect,
 } from "./runtime.js";
 export {
   type ApplicationAlchemyStateOptions,
+  type ApplicationAlchemyStateSummary,
   applicationAlchemyState,
   applicationAlchemyStateService,
+  inspectApplicationAlchemyState,
 } from "./state.js";
 export {
   type ApplicationAwsDeployment,

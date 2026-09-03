@@ -21,11 +21,11 @@ const provenance = sourceProvenance({
   symbol: 'Application',
 });
 const baseline: ApplicationDeploymentMigrationBaseline = {
-  release: '0.8.0',
-  gitTag: 'v0.8.0',
-  commit: 'a'.repeat(40),
-  applicationArtifactSchema: 'applik8s.applicationArtifact/v1alpha1',
-  applicationPlanSchema: 'applik8s.applicationPlan/v1alpha1',
+  release: '0.7.1',
+  gitTag: 'v0.7.1',
+  commit: '3d482707d70e868c9e20267650c9ebfda573bc98',
+  applicationArtifactSchema: 'applik8s.appGraph/v1alpha1',
+  applicationPlanSchema: 'applik8s.applicationPlan/absent-v0.7.1',
   providerCatalogDigest: sha('b'),
   runtimeProtocolVersions: ['applik8s.runtime/v1alpha1'],
   evidenceManifestDigest: sha('c'),
@@ -54,7 +54,7 @@ function sourceNode(overrides: Partial<ApplicationLegacyDeploymentNode> = {}): A
     id: 'legacy-database',
     semanticRequirement: 'application.database',
     capability: { interface: 'TransactionalDatabase' },
-    implementation: 'postgres-v08',
+    implementation: 'postgres-v071',
     providerContract: 'postgres.lifecycle/v1',
     physicalIdentity: {
       domain: 'kubernetes',
@@ -111,7 +111,7 @@ function input(overrides: Partial<ApplicationDeploymentMigrationInput> = {}): Ap
       planDigest: sha('f'),
     },
     target: {
-      release: '0.9.0-alpha.1',
+      release: '0.9.0',
       application: 'migration-test',
       profile: 'production',
       applicationArtifactDigest: sha('1'),
@@ -242,15 +242,15 @@ describe('read-only application deployment migration proposals', () => {
     });
   });
 
-  it('rejects partial, floating, or codec-mismatched v0.8 baselines', () => {
+  it('rejects partial, floating, or codec-mismatched release baselines', () => {
     expect(() => proposeApplicationDeploymentMigration(input({
       acceptedBaseline: { ...baseline, providerCatalogDigest: sha('9') },
     }))).toThrowError(ApplicationDeploymentMigrationProposalError);
     expect(() => proposeApplicationDeploymentMigration(input({
       source: {
         ...input().source,
-        baseline: { ...baseline, release: '0.8.x', gitTag: 'v0.8.x' },
+        baseline: { ...baseline, release: '0.7.x', gitTag: 'v0.7.x' },
       },
-    }))).toThrow(/exact v0\.8 release/u);
+    }))).toThrow(/exact semantic-version release/u);
   });
 });

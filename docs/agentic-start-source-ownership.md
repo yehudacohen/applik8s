@@ -1,6 +1,6 @@
 # Agentic Start source ownership
 
-**Status:** normative for the v0.7 generated product
+**Status:** normative for the v0.9 generated product
 
 Agentic Start does not minimize generated source for its own sake. It keeps the
 code a product builder is expected to understand and change, and packages the
@@ -51,3 +51,11 @@ ownership. It rejects restored local billing contracts, lifecycle schemas,
 manual transcript reconstruction, or artifact queries that bypass maintained
 modules. A generated file may exceed a size target only when the exception names
 the application-specific policy or experience that requires it.
+
+The v0.9 review baseline is 57 application-behavior files and 7,650 nonblank
+application-owned lines. The increase from the v0.7 baseline is attributable to
+new product-owned budgets, administration, specialist-agent, lifecycle, and
+workspace policy—not copied runtime machinery. Category and per-file ceilings
+are exact review tripwires; increasing one requires updating this ownership
+analysis and recording a specific exception where a file crosses the ordinary
+500-line ceiling.

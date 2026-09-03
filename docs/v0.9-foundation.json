@@ -1,26 +1,26 @@
 {
   "schemaVersion": 1,
-  "release": "0.9.0-alpha.1",
-  "status": "blocked-on-v0.8-release",
+  "release": "0.9.0",
+  "status": "foundation-in-progress",
   "sourceCandidate": {
-    "packageVersion": "0.8.0",
-    "commit": "367d6003cd3f77087701624272f08df925ab33bf",
-    "qualification": "source-candidate-only"
-  },
-  "releasedV08Baseline": {
-    "status": "unavailable",
-    "npmVersion": null,
-    "gitTag": null,
+    "packageVersion": "0.9.0",
     "commit": null,
-    "applicationGraphSchema": null,
-    "applicationPlanSchema": null,
-    "providerCatalogDigest": null,
-    "runtimeProtocolVersions": [],
-    "evidenceManifest": null
+    "qualification": "working-tree-unqualified"
+  },
+  "releasedBaseline": {
+    "status": "exact-release",
+    "npmVersion": "0.7.1",
+    "gitTag": "v0.7.1",
+    "commit": "3d482707d70e868c9e20267650c9ebfda573bc98",
+    "applicationGraphSchema": "applik8s.appGraph/v1alpha1",
+    "applicationPlanSchema": "applik8s.applicationPlan/absent-v0.7.1",
+    "providerCatalogDigest": "sha256:a76d01d9a16e8a0d4259c625c003384638f31d459539554392c44aeda826bbc8",
+    "runtimeProtocolVersions": ["applik8s.runtime/v1alpha1"],
+    "evidenceManifest": "docs/v07-acceptance-manifest.json#sha256:78c2f708283fb7367ebe32c7f0d82fffebd1a36bb4dd12d0dc23fc2903b18498"
   },
   "deploymentStateWrites": {
     "allowed": false,
-    "blockedBy": "V09_BASELINE_RELEASE_UNAVAILABLE"
+    "blockedBy": "V09_MIGRATION_EXECUTION_UNQUALIFIED"
   },
   "publicContractInventory": "v0.9-public-contract.json",
   "contracts": [
@@ -147,8 +147,8 @@
   ],
   "foundationGates": [
     {
-      "id": "exact-v0.8-baseline",
-      "implemented": false,
+      "id": "exact-v0.7.1-baseline",
+      "implemented": true,
       "blocking": true,
       "diagnostic": "V09_BASELINE_RELEASE_UNAVAILABLE"
     },
@@ -213,10 +213,22 @@
       "diagnostic": "JOB_PROVIDER_SELECTION_UNAVAILABLE"
     },
     {
-      "id": "read-only-v0.8-migration-proposal",
+      "id": "read-only-v0.7.1-migration-proposal",
       "implemented": true,
       "blocking": true,
       "diagnostic": "V09_MIGRATION_PROPOSAL_UNAVAILABLE"
+    },
+    {
+      "id": "restart-safe-migration-state-machine",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "V09_MIGRATION_STATE_MACHINE_UNAVAILABLE"
+    },
+    {
+      "id": "v0.7.1-migration-execution",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "V09_MIGRATION_EXECUTION_UNQUALIFIED"
     },
     {
       "id": "minimal-journey-runner",

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/dev",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Independent reviewed development environment and coding-agent integration for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,8 +21,8 @@
     "./skills": { "types": "./dist/skills.d.ts", "import": "./dist/skills.js", "default": "./dist/skills.js" }
   },
   "dependencies": {
-    "@applik8s/code-agent": "0.8.0",
-    "@applik8s/core": "0.8.0",
+    "@applik8s/code-agent": "0.9.0",
+    "@applik8s/core": "0.9.0",
     "@libsql/client": "^0.17.4"
   }
 }

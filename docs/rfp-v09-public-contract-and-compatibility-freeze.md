@@ -10,7 +10,7 @@
 
 **Target:** Applik8s v0.9 contract freeze and `1.0.0-rc.1` admission
 
-**Depends on:** The exact released v0.8 evidence baseline, ApplicationPlan and Deployment-State Migration,
+**Depends on:** The exact released v0.7.1 evidence baseline, ApplicationPlan and Deployment-State Migration,
 and every stable v0.9 semantic/provider contract
 
 ## Executive summary
@@ -99,7 +99,7 @@ The framework needs to know exactly what it promises before declaring 1.0 compat
 17. Higher-level provider implementations declare typed recursive implementation dependencies. The
     catalog preserves dependency identity, visibility, guarantees, provider-internal authority, lifecycle,
     readiness, migration, and every consumer edge; nested dependencies do not grant callback authority.
-18. Active v0.8 deployment state migrates only through the versioned ApplicationPlan and deployment-state
+18. Active v0.7.1 deployment state migrates only through the versioned ApplicationPlan and deployment-state
     migration protocol. A read-only legacy decoder is not adoption evidence.
 19. Effect guarantee classifications, identities, receipts, fencing tokens, and unknown-outcome envelopes
     are versioned public runtime contracts wherever a stable execution surface exposes them. A provider
@@ -111,6 +111,12 @@ The contract program owns inventory, classification, compatibility policy, relea
 consistency. Package, compiler, runtime, provider, documentation, example, and release owners retain the
 authoritative implementation data from which the inventory is derived. The catalog reports those
 contracts; it cannot manufacture compatibility or maturity.
+
+Package-level classification is only a default. Entrypoints and symbols whose
+evidence is narrower carry explicit machine-readable overrides. In particular,
+the finite-Job entrypoints and their umbrella-package re-exports remain beta
+until the complete generated compiler-to-worker recovery vertical passes. A
+stable umbrella package must never promote an unfinished member by inheritance.
 
 ## Inventory scope
 
@@ -355,7 +361,7 @@ The documentation website and release notes consume the same catalog.
 
 ## Upgrade qualification
 
-The v0.9 gate upgrades from one exact released v0.8 baseline identified by package versions, Git tag,
+The v0.9 gate upgrades from one exact released v0.7.1 baseline identified by package versions, Git tag,
 application artifact schema, `ApplicationPlan` schema, provider catalog digest, runtime/host protocol
 versions, and release-evidence manifest. “Latest source” or a candidate worktree is not a migration
 baseline. Qualification uses:
@@ -379,11 +385,11 @@ release admission decision.
 
 The 1.0 candidate support floor is explicit:
 
-- authoring compatibility is tested from the latest released v0.8 and every v0.9 minor to the RC;
+- authoring compatibility is tested from the latest released v0.7.1 and every v0.9 minor to the RC;
 - persisted stable artifacts and runtime protocols support at least the immediately preceding stable minor
   and every published RC in the active RC series;
 - provider state upgrades start from the immediately preceding maintained provider release;
-- live deployment upgrades start from the exact qualified v0.8 release and latest v0.9 release;
+- live deployment upgrades start from the exact qualified v0.7.1 release and latest v0.9 release;
 - rollback is promised only where the provider/lifecycle catalog marks it supported;
 - beta/preview state has only the window stated by its own catalog entry.
 
@@ -448,7 +454,7 @@ scorecard pass.
 - Informational and opaque fields are absent from supported machine-consumer dependencies.
 - No stable item lacks docs, ownership, maturity, and evidence.
 - Previous-release source and persisted artifacts pass their declared upgrade lanes.
-- The exact v0.8 baseline passes active-state migration, interruption, rollback-before-commit,
+- The exact v0.7.1 baseline passes active-state migration, interruption, rollback-before-commit,
   forward-recovery-after-commit, and deletion qualification.
 - Official examples use only canonical vocabulary.
 - Clean package consumers expose no undeclared dependency or eager tooling leak.

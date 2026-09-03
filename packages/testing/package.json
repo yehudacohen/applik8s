@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/testing",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Source-owned application journeys, provider conformance, and local operator testing for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,9 +28,9 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/sdk": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/sdk": "0.9.0",
     "arktype": "2.2.1"
   }
 }

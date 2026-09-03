@@ -3,6 +3,7 @@
 import { access, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
+  type ApplicationPlan,
   type ApplicationProfileTransitionPlan,
   diffApplicationPlans,
   planApplicationProfileTransitions,
@@ -11,6 +12,7 @@ import {
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
 import {
   readApplicationDeploymentGraph,
+  withGeneratedApplicationAlchemyDeploymentLease,
 } from './application-alchemy-deployment.js';
 import {
   resolveApplicationBuildPackage,
@@ -54,6 +56,14 @@ import {
   renderCanonicalApplicationPlan,
 } from './application-plan-rendering.js';
 import { assertRequestedDeploymentProfile } from './application-deployment-profile.js';
+import {
+  captureReleasedV071ApplicationDeployment,
+  planReleasedV071ApplicationDeploymentMigration,
+  prepareReleasedV071ApplicationDeploymentMigration,
+  retireReleasedV071ApplicationDeploymentSource,
+  writeApplicationDeploymentMigrationProposal,
+} from './application-deployment-migration.js';
+import { createFileApplicationDeploymentMigrationRunStore } from './application-deployment-migration-store.js';
 
 export async function runApplicationDeploy(
   entrypoint: string,
@@ -78,6 +88,13 @@ export async function runApplicationDeploy(
     if (buildCode !== 0) throw processError('application-build', buildCode);
   }
   const outDir = options.outDir ?? '.applik8s/deploy';
+  const previousDeployment = await runPhase('deployment-migration', io, () =>
+    captureReleasedV071ApplicationDeployment({
+      graphPath: resolve(io.cwd, outDir, 'typekro', 'application-deployment-graph.json'),
+      stateRoot: resolve(projectRoot, '.applik8s', 'state', 'alchemy'),
+      migrationRoot: resolve(projectRoot, '.applik8s', 'state', 'migration'),
+      ...(options.migrateFrom ? { migrateFrom: options.migrateFrom } : {}),
+    }));
   const installationSpecPath = options.instance
     ? resolve(io.cwd, options.instance)
     : undefined;
@@ -156,8 +173,24 @@ export async function runApplicationDeploy(
   for (const change of effectful) io.stdout(`  ${change.action} ${change.type} ${change.id}`);
   const applicationPlan = JSON.parse(
     await readFile(emitted.applicationPlanPath, 'utf8'),
-  ) as Parameters<typeof validateApplicationPlan>[0];
+  ) as ApplicationPlan;
   assertDeployableApplicationPlan(applicationPlan, io);
+  const targetGraph = await readApplicationDeploymentGraph(emitted.path);
+  const migrationPlan = previousDeployment
+    ? planReleasedV071ApplicationDeploymentMigration({
+        source: previousDeployment,
+        targetGraph,
+        targetPlan: applicationPlan,
+        targetStack: deployment.stack,
+      })
+    : undefined;
+  if (migrationPlan) {
+    const migrationArtifact = await writeApplicationDeploymentMigrationProposal(
+      resolve(io.cwd, outDir, 'typekro', 'migration'),
+      migrationPlan,
+    );
+    io.stdout(`Released v0.7.1 migration proposal: ${migrationArtifact}`);
+  }
   if (options.planOnly) {
     io.stdout(renderCanonicalApplicationPlan(applicationPlan, options.planFormat ?? 'text'));
     if (options.planDiff) {
@@ -187,18 +220,88 @@ export async function runApplicationDeploy(
     throw new Error('--skip-image-build is incompatible with graph deployment because every compiler-declared artifact must resolve through its Alchemy resource before Kubernetes apply.');
   }
   io.stdout(`Deploying the TypeKro application graph through Alchemy to context ${options.context}`);
-  const applied = await runPhase('alchemy-apply', io, () => deployment.apply());
+  const observeReady = async () => {
+    await runPhase('pull-secret-verification', io, () =>
+      verifyApplicationRegistryPullSecret(registry, options.context));
+    await runPhase('authoritative-readiness', io, () =>
+      waitForResourceGraphDefinitionReadiness(options.context, instance.resourceGraphDefinitionName, io));
+    const ready = await runPhase('authoritative-readiness', io, () =>
+      waitForApplicationInstanceReadiness(options.context, instance, io));
+    if (ready.url) {
+      await runPhase('exposure-verification', io, () =>
+        waitForApplicationEndpoint(ready.url as string, io));
+    }
+    return ready;
+  };
+  const deployed = previousDeployment
+    ? await runPhase('deployment-migration', io, async () => {
+        const stateRoot = resolve(projectRoot, '.applik8s', 'state', 'alchemy');
+        const owner = `applik8s-migration:${process.pid}`;
+        return withGeneratedApplicationAlchemyDeploymentLease(
+          { stateRoot, owner, leaseTtlMs: 30 * 60_000 },
+          deployment.stack,
+          async (lease) => {
+            const leasedDeployment = await createGeneratedApplicationAlchemyDeployment({
+              graphPath: emitted.path,
+              source: source as never,
+              spec: instance.spec as never,
+              context: options.context,
+              registry,
+              projectRoot,
+              owner,
+              lease,
+              ...(options.development ? { development: true } : {}),
+              ...(options.allowBreakingChanges ? { allowBreakingChanges: true } : {}),
+            });
+            const fencedPlan = await leasedDeployment.plan();
+            if (fencedPlan.planIdentityDigest !== plan.planIdentityDigest) {
+              throw new Error('Target Alchemy plan changed between preview and migration fencing.');
+            }
+            let appliedResult: Awaited<ReturnType<typeof leasedDeployment.apply>> | undefined;
+            let readinessResult: Awaited<ReturnType<typeof observeReady>> | undefined;
+            const trackedDeployment = {
+              ...leasedDeployment,
+              async apply() {
+                appliedResult = await leasedDeployment.apply();
+                return appliedResult;
+              },
+            };
+            const prepared = await prepareReleasedV071ApplicationDeploymentMigration({
+              source: previousDeployment,
+              targetGraph,
+              targetPlan: applicationPlan,
+              targetDeployment: trackedDeployment,
+              lease,
+              stateRoot,
+              migrationRoot: resolve(io.cwd, outDir, 'typekro', 'migration'),
+              store: createFileApplicationDeploymentMigrationRunStore({
+                root: resolve(projectRoot, '.applik8s', 'state', 'migration'),
+              }),
+              owner,
+              observeTargetReady: async () => {
+                readinessResult = await observeReady();
+              },
+            });
+            const completed = await prepared.advance();
+            if (completed.phase !== 'completed') {
+              throw new Error(`Migration ${completed.id} stopped in phase ${completed.phase}.`);
+            }
+            // A resumed completed run may not execute the provider callbacks in
+            // this process. Reconcile once under the same lease and re-observe.
+            appliedResult ??= await leasedDeployment.apply();
+            readinessResult ??= await observeReady();
+            io.stdout(`Migration ${completed.id} completed at revision ${completed.revision}.`);
+            await retireReleasedV071ApplicationDeploymentSource(previousDeployment);
+            return { applied: appliedResult, readiness: readinessResult };
+          },
+        );
+      })
+    : {
+        applied: await runPhase('alchemy-apply', io, () => deployment.apply()),
+        readiness: await observeReady(),
+      };
+  const { applied, readiness } = deployed;
   io.stdout(`Alchemy transaction applied: ${applied.declarationCount} TypeKro declarations, ${applied.artifacts.length} immutable artifacts`);
-  await runPhase('pull-secret-verification', io, () =>
-    verifyApplicationRegistryPullSecret(registry, options.context));
-  await runPhase('authoritative-readiness', io, () =>
-    waitForResourceGraphDefinitionReadiness(options.context, instance.resourceGraphDefinitionName, io));
-  const readiness = await runPhase('authoritative-readiness', io, () =>
-    waitForApplicationInstanceReadiness(options.context, instance, io));
-  if (readiness.url) {
-    await runPhase('exposure-verification', io, () =>
-      waitForApplicationEndpoint(readiness.url as string, io));
-  }
   await runPhase('authoritative-readiness', io, async () => {
     const graph = await readApplicationDeploymentGraph(emitted.path);
     await recordApplicationDeployEvidence({

@@ -33,6 +33,51 @@ export interface ApplicationAlchemyStateOptions {
   readonly rejectSensitiveState?: boolean;
 }
 
+export interface ApplicationAlchemyStateSummary {
+  readonly stack: string;
+  readonly stage: string;
+  readonly exists: boolean;
+  readonly resourceCount: number;
+  readonly hasStackOutput: boolean;
+}
+
+/** Non-secret structural evidence used before an in-place state migration. */
+export async function inspectApplicationAlchemyState(input: {
+  readonly root: string;
+  readonly stack: string;
+  readonly stage: string;
+}): Promise<ApplicationAlchemyStateSummary> {
+  const directory = stagePath(
+    join(input.root, "alchemy-state"),
+    input.stack,
+    input.stage,
+  );
+  const entries = await readdir(directory).catch((cause: unknown) => {
+    if (errorCode(cause) === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (!entries) {
+    return {
+      stack: input.stack,
+      stage: input.stage,
+      exists: false,
+      resourceCount: 0,
+      hasStackOutput: false,
+    };
+  }
+  return {
+    stack: input.stack,
+    stage: input.stage,
+    exists: true,
+    resourceCount: entries.filter((entry) =>
+      entry.endsWith(".json")
+      && entry !== stackOutputFile
+      && !entry.includes(".backup.")
+      && !entry.includes(".tmp.")).length,
+    hasStackOutput: entries.includes(stackOutputFile),
+  };
+}
+
 /**
  * Filesystem Alchemy state with an explicit root, atomic writes, restrictive
  * permissions, corruption errors, and a fail-closed plaintext-secret guard.

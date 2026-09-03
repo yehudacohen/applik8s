@@ -2691,7 +2691,7 @@ The fix must land in API, diagnostics, docs, or examples.
 
 v0.9 does not run as one long serial pipeline. It begins with one mandatory compatibility foundation, then
 four tracks run concurrently. No semantic or provider increment may write deployment state until the
-foundation can identify the exact released v0.8 input and explain its migration.
+foundation can identify the exact released v0.7.1 input and explain its migration.
 
 ```text
 ┌──────────────────────────────────────────────┐
@@ -2740,7 +2740,7 @@ Documentation is not “done” if it papers over an awkward API that can still 
 # Proposed implementation/release train
 
 ```text
-0.9.0-alpha.1
+0.9.0
   exact released-v0.8 package/artifact/plan/catalog/runtime/evidence baseline
   machine-readable public-contract/package/diagnostic inventory
   deterministic implementation identity and profile resolver/plan schema
@@ -2806,7 +2806,7 @@ Documentation is not “done” if it papers over an awkward API that can still 
   compatibility and upgrades
   website/reference completion
 
-0.9.0-alpha.10
+0.9.00
   packed-package qualification
   example/Start normalization
   accessibility/search/performance/security pass
@@ -3134,7 +3134,7 @@ Mitigation: repeated confusion triggers simplification/rename/deletion while pre
 
 # Closed v0.9 decisions
 
-- v0.9 begins with the exact-v0.8 identity/migration/effect-safety foundation, then executes the closed
+- v0.9 begins with the exact-v0.7.1 identity/migration/effect-safety foundation, then executes the closed
   semantic-completion program before freezing foundational scope.
 - The only new stable-candidate application-level semantic nouns are `job()`, `Query.onBatch(...)`, and
   `application.events`. Managed-model portability, scheduling convergence, external/Kubernetes DI,

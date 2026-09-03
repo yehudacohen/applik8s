@@ -54,16 +54,17 @@ const requiredPages = {
   'docs-site/src/content/docs/security.mdx': ['Identity, authority, and secrets', 'Clients provide application input'],
   'docs-site/src/content/docs/infrastructure-providers.mdx': ['TypeKro authors Kubernetes resources', 'External bindings contribute no infrastructure'],
   'docs-site/src/content/docs/infrastructure-providers/provider-guarantees.mdx': ['Compare provider guarantees', 'does not upgrade maturity'],
-  'docs-site/src/content/docs/understand/troubleshooting.mdx': ['V09_BASELINE_RELEASE_UNAVAILABLE', 'JOURNEY_PROVIDER_INCOMPATIBLE'],
+  'docs-site/src/content/docs/understand/troubleshooting.mdx': ['V09_MIGRATION_EXECUTION_UNQUALIFIED', 'JOURNEY_PROVIDER_INCOMPATIBLE'],
   'docs-site/src/content/docs/examples-starts.mdx': ['GuestBook', 'Chirp', 'Agentic Start'],
   'docs-site/src/content/docs/reference/public-contracts.mdx': [
     'v0.9-public-contract.json',
     'does not upgrade',
   ],
-  'docs-site/src/content/docs/upgrade/v08-to-v09.mdx': [
-    'V09_BASELINE_RELEASE_UNAVAILABLE',
-    '`mutationAuthorized: false`',
-    'Do not use source-candidate state',
+  'docs-site/src/content/docs/upgrade/v071-to-v09.mdx': [
+    '--migrate-from 0.7.1',
+    'same complete stack-identity lease',
+    'both direct and KRO deployments',
+    'v0.8 engineering line',
   ],
 } as const;
 
@@ -89,7 +90,7 @@ for (const expected of [
   "content: 'noindex,nofollow'",
   "slug: 'build-applications/operations-and-effects'",
   "slug: 'build-applications/profiles-and-providers'",
-  "slug: 'upgrade/v08-to-v09'",
+  "slug: 'upgrade/v071-to-v09'",
   "slug: 'build-applications/decision-guide'",
   "slug: 'distributed-behavior'",
   "slug: 'infrastructure-providers/provider-guarantees'",
@@ -104,7 +105,7 @@ if (findings.length > 0) {
 }
 
 console.log(JSON.stringify({
-  release: '0.9.0-alpha.1',
+  release: '0.9.0',
   previewBase: '/docs/preview/v0.9',
   pages: Object.keys(requiredPages).length,
   firstPrimitiveGuide: 'operations-and-effects',

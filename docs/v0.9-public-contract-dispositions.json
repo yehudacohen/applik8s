@@ -1,8 +1,43 @@
 {
   "schemaVersion": 1,
-  "release": "0.9.0-alpha.1",
+  "release": "0.9.0",
   "status": "candidate-review-ready",
   "documentation": "docs/packages.md",
+  "overrides": [
+    {
+      "id": "finite-jobs-beta-entrypoints",
+      "package": "@applik8s/applik8s",
+      "entrypoints": [
+        "./job",
+        "./job-controller-runtime",
+        "./job-runtime-durable",
+        "./job-runtime-remote",
+        "./job-store"
+      ],
+      "maturity": "beta",
+      "stability": "experimental",
+      "owner": "finite-execution",
+      "evidence": ["job-provider-conformance", "kubernetes-job-lifecycle"],
+      "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
+    },
+    {
+      "id": "finite-jobs-root-symbols",
+      "package": "@applik8s/applik8s",
+      "entrypoints": ["."],
+      "symbolPrefixes": [
+        "ApplicationJob",
+        "applicationJob",
+        "createApplicationJob",
+        "defaultApplicationJob",
+        "installApplicationJob"
+      ],
+      "maturity": "beta",
+      "stability": "experimental",
+      "owner": "finite-execution",
+      "evidence": ["job-provider-conformance", "kubernetes-job-lifecycle"],
+      "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+    }
+  ],
   "groups": [
     {
       "id": "foundation-authoring",

@@ -1,0 +1,125 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  type ApplicationDeploymentGraph,
+  digestApplicationDeploymentValue,
+  serializeApplicationDeploymentGraph,
+} from "@applik8s/deployment-contract";
+import { createApplicationAlchemyGraphDeployment } from "@applik8s/deployment-alchemy";
+import { type } from "arktype";
+import { kubernetesComposition } from "typekro";
+import { ConfigMap } from "typekro/simple";
+import { expect, it } from "vitest";
+
+const context = process.env.APPLIK8S_E2E_CONTEXT ?? "orbstack";
+const namespace = process.env.APPLIK8S_V09_MIGRATION_NAMESPACE ?? "applik8s-v09-migration-live";
+const stateRoot = required("APPLIK8S_V09_MIGRATION_STATE_ROOT");
+const graphPath = required("APPLIK8S_V09_MIGRATION_GRAPH_PATH");
+const application = process.env.APPLIK8S_V09_MIGRATION_APPLICATION ?? "v09-migration-fixture";
+const instance = "migration";
+const strategy = deploymentStrategy();
+const connectionDigest = digestApplicationDeploymentValue({ provider: "kubernetes", context });
+
+it("creates an exact released-v0.7.1 Alchemy deployment for migration", async () => {
+  const definition = {
+    name: application,
+    apiVersion: `${application}.qualification.applik8s.dev/v1alpha1`,
+    kind: "V09MigrationFixture",
+    spec: type({ name: "string", version: "string" }),
+    status: type({ ready: "boolean" }),
+  };
+  const source = kubernetesComposition(definition, (spec) => {
+    const config = ConfigMap({
+      id: "migrationConfig",
+      name: `${application}-config`,
+      namespace,
+      data: { version: spec.version },
+    });
+    return { ready: config.metadata.name === `${application}-config` };
+  });
+  Object.defineProperty(source, "__applik8sTypeKroDefinition", {
+    value: definition,
+    enumerable: false,
+  });
+  const graph = deploymentGraph("v1");
+  await mkdir(dirname(graphPath), { recursive: true });
+  await writeFile(graphPath, serializeApplicationDeploymentGraph(graph));
+  const deployment = await createApplicationAlchemyGraphDeployment({
+    graph,
+    source,
+    spec: { name: instance, version: "v1" },
+    stateRoot,
+    stage: "installation",
+    owner: "released-v071-migration-source",
+    factory: {
+      namespace: "typekro-system",
+      waitForReady: true,
+      timeout: 120_000,
+    },
+  });
+  await expect(deployment.apply()).resolves.toMatchObject({ transaction: "applied" });
+});
+
+function deploymentGraph(version: string): ApplicationDeploymentGraph {
+  const configuration = { name: instance, version };
+  return {
+    apiVersion: "applik8s.deploymentGraph/v1alpha1",
+    kind: "ApplicationDeploymentGraph",
+    metadata: {
+      identity: {
+        connection: { provider: "kubernetes", cluster: context, digest: connectionDigest },
+        application,
+        controlPlaneNamespace: "typekro-system",
+        instance,
+        profile: "starter",
+      },
+      mode: "fresh",
+      strategy,
+      sourceGraphDigest: digestApplicationDeploymentValue(configuration),
+      compilerVersion: "0.6.0",
+    },
+    nodes: [{
+      id: "kubernetes.application",
+      kind: "kubernetesComposition",
+      contractVersion: 1,
+      source: { semanticNodeId: "application" },
+      provider: { interface: "KubernetesApplication", implementation: "typekro", version: "1" },
+      scope: { connectionDigest, namespace },
+      capabilities: { strategies: ["direct", "kro"], alchemy: true },
+      configurationDigest: digestApplicationDeploymentValue(configuration),
+      inputs: {},
+      outputs: [{ name: "status", type: "json", sensitivity: "public", persistence: "state" }],
+      lifecycle: { ownership: "application", deletion: "delete", adoption: "createOrAdoptExact" },
+      spec: {
+        compositionId: application,
+        fragmentIds: [],
+        installationSpec: configuration,
+        materialized: {
+          resources: [{
+            id: "migrationConfig",
+            template: {
+              apiVersion: "v1",
+              kind: "ConfigMap",
+              metadata: { name: `${application}-config`, namespace },
+              data: { version },
+            },
+          }],
+          status: { ready: true },
+        },
+      },
+    }],
+    edges: [],
+  };
+}
+
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function deploymentStrategy(): "direct" | "kro" {
+  const value = process.env.APPLIK8S_V09_MIGRATION_STRATEGY ?? "direct";
+  if (value !== "direct" && value !== "kro") throw new Error(`Unsupported migration strategy ${value}.`);
+  return value;
+}

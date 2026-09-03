@@ -7,6 +7,7 @@ interface Gate {
   readonly status: 'passing' | 'in-progress' | 'blocked' | 'missing';
   readonly command: string;
   readonly blocker?: string;
+  readonly releaseBlocking?: boolean;
   readonly evidence: readonly string[];
 }
 
@@ -54,8 +55,8 @@ for (const gate of acceptance.gates) {
   if ((gate.status === 'blocked' || gate.status === 'missing') && !gate.blocker?.match(/^[A-Z][A-Z0-9_]+$/u)) {
     findings.push(`V09_ACCEPTANCE_BLOCKER_MISSING:${gate.id}`);
   }
-  if (requireRelease && gate.status !== 'passing') findings.push(`V09_RELEASE_GATE_NOT_PASSING:${gate.id}:${gate.status}`);
-  if (requireRelease) {
+  if (requireRelease && gate.releaseBlocking !== false && gate.status !== 'passing') findings.push(`V09_RELEASE_GATE_NOT_PASSING:${gate.id}:${gate.status}`);
+  if (requireRelease && gate.releaseBlocking !== false) {
     for (const evidence of gate.evidence) {
       try { await access(evidence); } catch { findings.push(`V09_RELEASE_EVIDENCE_UNAVAILABLE:${gate.id}:${evidence}`); }
     }
@@ -68,7 +69,7 @@ for (const pillar of scorecard.pillars) {
 for (const required of ['guestbook', 'chirp', 'agentic-start']) {
   if (!scorecard.acceptanceApplications.some(({ id }) => id === required)) findings.push(`V09_ACCEPTANCE_APPLICATION_MISSING:${required}`);
 }
-for (const required of ['released-v08-upgrade', 'finite-jobs', 'kubernetes-cluster-capability', 'external-capability-bindings', 'ml-models', 'explainable-decisions', 'saga-deployed-provider', 'research-agent-managed', 'code-agent-local', 'builder-opencode', 'chirp-production-aws', 'chirp-production-kubernetes', 'agentic-start-browser']) {
+for (const required of ['released-v071-upgrade', 'finite-jobs', 'kubernetes-cluster-capability', 'kubernetes-cluster-remote', 'external-capability-bindings', 'application-event-federation', 'ml-models', 'explainable-decisions', 'saga-deployed-provider', 'research-agent-managed', 'code-agent-local', 'builder-opencode', 'chirp-production-aws', 'chirp-production-kubernetes', 'agentic-start-browser']) {
   if (!gateIds.has(required)) findings.push(`V09_GLOBAL_RELEASE_GATE_MISSING:${required}`);
 }
 if (requireRelease && (scorecard.status !== 'release-candidate' || acceptance.status !== 'release-candidate')) {

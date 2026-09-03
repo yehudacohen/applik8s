@@ -2219,7 +2219,7 @@ function maintainedBuiltInImplementation<TImplementation extends object>(
       provider: {
         package: '@applik8s/applik8s',
         export: constructorExport,
-        version: '0.9.0-alpha.1',
+        version: '0.9.0',
       },
       runtimeAdapter: options.runtimeAdapter,
       ...(options.deploymentFamily ? { deploymentFamily: options.deploymentFamily } : {}),

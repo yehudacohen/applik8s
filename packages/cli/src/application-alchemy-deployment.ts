@@ -4,6 +4,9 @@ import { resolve } from 'node:path';
 import {
   createApplicationAlchemyGraphDeployment,
   type ApplicationAlchemyDeployment,
+  type ApplicationAlchemyLease,
+  type ApplicationAlchemyStackIdentity,
+  withApplicationAlchemyDeploymentLease,
 } from '@applik8s/deployment-alchemy';
 import type {
   ApplicationContainerArtifactProviderOptions,
@@ -46,10 +49,28 @@ export interface GeneratedApplicationAlchemyDeploymentOptions<
   readonly registry: ResolvedApplicationContainerRegistry;
   readonly projectRoot: string;
   readonly owner?: string;
+  /** @internal Operation-wide lifecycle lease held by the migration coordinator. */
+  readonly lease?: ApplicationAlchemyLease;
   /** One-deployment TypeKro schema-migration acknowledgement. */
   readonly allowBreakingChanges?: boolean;
   /** Mount a closed source allowlist into the graph-owned ApplicationHost. */
   readonly development?: boolean;
+}
+
+/**
+ * Keeps provider-specific lease ownership behind the CLI's Alchemy adapter
+ * instead of exposing the deployment implementation to command modules.
+ */
+export function withGeneratedApplicationAlchemyDeploymentLease<T>(
+  input: {
+    readonly stateRoot: string;
+    readonly owner: string;
+    readonly leaseTtlMs?: number;
+  },
+  stack: ApplicationAlchemyStackIdentity,
+  operation: (lease: ApplicationAlchemyLease) => Promise<T>,
+): Promise<T> {
+  return withApplicationAlchemyDeploymentLease(input, stack, operation);
 }
 
 /**
@@ -101,6 +122,7 @@ export async function createGeneratedApplicationAlchemyDeployment<
     // unrelated stack that cannot diff or migrate the prior provider.
     stage: 'installation',
     owner: options.owner ?? `applik8s-cli:${process.pid}`,
+    ...(options.lease ? { lease: options.lease } : {}),
     artifactRegistry,
     artifactProvider: applicationAlchemyArtifactProvider(),
     harborProvider: {

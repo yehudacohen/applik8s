@@ -39,7 +39,7 @@ The target-free authoring and immutable planning vertical is implemented on the 
   graph beneath a semantic provider.
 
 Remaining provider-constructor coverage, runtime-adapter target parity, and deployment migration qualification remain subsequent
-implementation phases. Deployment-state mutation remains blocked until the exact released v0.8 baseline
+implementation phases. Deployment-state mutation remains blocked until the exact released v0.7.1 baseline
 is recorded.
 
 ## Executive summary
@@ -1110,9 +1110,9 @@ values in implementation plans or configuration digests.
 
 Increment 3 remains in progress until every maintained constructor accepts its provider-native binding
 types and the deployment compiler resolves those bindings into explicit runtime projections. Increment 4
-physical resource planning and Increment 5 active-state migration remain open. The unavailable exact v0.8
-release baseline continues to prohibit deployment-state writes; it does not block these additive semantic
-contracts.
+physical resource planning and Increment 5 active-state migration remain open. The exact v0.7.1 baseline
+is recorded, but active-state writes remain prohibited until the executable handoff fixture passes; that
+does not block these additive semantic contracts.
 
 ### Increment 1 — Contract and vocabulary
 

@@ -29,6 +29,8 @@ export interface ApplicationDeployCommandOptions {
    * subsequent deployments return to fail-closed compatibility.
    */
   readonly allowBreakingChanges?: boolean;
+  /** Exact released deployment lineage acknowledged for active-state migration. */
+  readonly migrateFrom?: '0.7.1';
   readonly runtimeEntrypoint?: string;
   readonly acknowledge?: readonly string[];
 }
@@ -81,6 +83,7 @@ export type ApplicationDeploymentPhase =
   | 'instance-selection'
   | 'profile-transition'
   | 'deployment-plan'
+  | 'deployment-migration'
   | 'registry-resolution'
   | 'pull-secret-verification'
   | 'alchemy-plan'
@@ -97,6 +100,7 @@ export const applicationDeploymentPhaseRemediation: Readonly<
   'instance-selection': 'Provide exactly one authored root Application CR with --instance <path>.',
   'profile-transition': 'Inspect the current and desired installation profiles, then supply only the exact acknowledgement printed by the plan when a reviewed destructive transition is intentional.',
   'deployment-plan': 'Inspect application-deployment-graph.json and fix the first invalid identity, dependency, output, ownership, or lifecycle diagnostic.',
+  'deployment-migration': 'Inspect the generated migration proposal and persisted migration run; resume the same deployment, or follow its explicit forward-recovery diagnostic.',
   'registry-resolution': 'Verify the selected Kubernetes context, registry Service, and provider endpoint.',
   'pull-secret-verification': 'Ensure the graph-created pull Secret is present in every authored workload namespace.',
   'alchemy-plan': 'Inspect the portable deployment graph and TypeKro semantic diagnostics.',

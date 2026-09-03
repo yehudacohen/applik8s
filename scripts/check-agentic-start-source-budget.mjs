@@ -23,8 +23,13 @@ for (const absolute of files) {
   const source = await readFile(absolute, 'utf8');
   sourceByPath.set(path, source);
   const nonblank = source.split(/\r?\n/u).filter(line => line.trim()).length;
-  if (nonblank > budget.maximumNonblankLines) {
-    findings.push(`${path} has ${nonblank} nonblank lines; maximum is ${budget.maximumNonblankLines}.`);
+  const exception = budget.perFileNonblankLineExceptions?.[path];
+  const maximumNonblankLines = exception?.maximum ?? budget.maximumNonblankLines;
+  if (exception && (!exception.reason?.trim() || exception.maximum <= budget.maximumNonblankLines)) {
+    findings.push(`${path} has an invalid reviewed line-budget exception.`);
+  }
+  if (nonblank > maximumNonblankLines) {
+    findings.push(`${path} has ${nonblank} nonblank lines; maximum is ${maximumNonblankLines}.`);
   }
   const category = sourceCategory(path);
   counts[category] += 1;
@@ -49,6 +54,9 @@ for (const absolute of files) {
     browserOwned
     && /from ['"](?:\.\.\/)+(?:installation|providers|modules)['"]/u.test(source)
   ) findings.push(`${path} imports server/deployment composition into browser-owned UI.`);
+}
+for (const path of Object.keys(budget.perFileNonblankLineExceptions ?? {})) {
+  if (!sourceByPath.has(path)) findings.push(`reviewed line-budget exception references missing source ${path}.`);
 }
 
 for (const retired of [

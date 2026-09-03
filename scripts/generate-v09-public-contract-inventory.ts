@@ -58,10 +58,23 @@ interface PublicContractDispositionGroup {
 
 interface PublicContractDispositionManifest {
   readonly schemaVersion: 1;
-  readonly release: '0.9.0-alpha.1';
+  readonly release: '0.9.0';
   readonly status: 'candidate-review-ready' | 'frozen';
   readonly documentation: string;
+  readonly overrides?: readonly PublicContractOverride[];
   readonly groups: readonly PublicContractDispositionGroup[];
+}
+
+interface PublicContractOverride {
+  readonly id: string;
+  readonly package: string;
+  readonly entrypoints: readonly string[];
+  readonly symbolPrefixes?: readonly string[];
+  readonly maturity: PublicContractMaturity;
+  readonly stability: PublicContractStability;
+  readonly owner: string;
+  readonly evidence: readonly string[];
+  readonly reason: string;
 }
 
 const root = resolve(new URL('..', import.meta.url).pathname);
@@ -72,7 +85,7 @@ const dispositionManifest = JSON.parse(
 ) as PublicContractDispositionManifest;
 if (
   dispositionManifest.schemaVersion !== 1
-  || dispositionManifest.release !== '0.9.0-alpha.1'
+  || dispositionManifest.release !== '0.9.0'
   || !['candidate-review-ready', 'frozen'].includes(dispositionManifest.status)
 ) {
   throw new Error('PUBLIC_CONTRACT_DISPOSITION_IDENTITY_INVALID');
@@ -99,6 +112,10 @@ const dispositionByPackage = packageDispositions(
   dispositionManifest,
   manifests.map(({ manifest }) => manifest.name as string),
 );
+const contractOverrides = validateContractOverrides(
+  dispositionManifest.overrides ?? [],
+  manifests.map(({ manifest }) => manifest.name as string),
+);
 
 const packages = manifests
   .map(({ directory, manifest, entrypoints }) => {
@@ -122,18 +139,46 @@ const packages = manifests
       ].filter((dependency) => dependency.startsWith('@applik8s/')))].sort(),
       entrypoints: entrypoints.map(({ name: entrypoint, source }) => {
         const symbols = exportedSymbols(resolve(root, source));
+        const overrides = contractOverrides.filter(candidate =>
+          candidate.package === name && candidate.entrypoints.includes(entrypoint)
+        );
+        const entrypointOverride = overrides.find(candidate => !candidate.symbolPrefixes);
+        const symbolContracts = symbols.flatMap(symbol => {
+          const override = overrides.find(candidate =>
+            candidate.symbolPrefixes?.some(prefix => symbol.startsWith(prefix))
+          );
+          return override ? [{ name: symbol, contract: explicitOverrideContract(override) }] : [];
+        });
         return {
           name: entrypoint,
           source,
           kind: symbols.length === 0 ? 'side-effect' : 'module',
-          contract: { inherits: `package:${name}` },
+          contract: entrypointOverride
+            ? explicitOverrideContract(entrypointOverride)
+            : { inherits: `package:${name}` },
           symbols,
           symbolContract: { inherits: `entrypoint:${name}:${entrypoint}` },
+          ...(symbolContracts.length > 0 ? { symbolContracts } : {}),
         };
       }),
     };
   })
   .sort((left, right) => left.name.localeCompare(right.name));
+
+for (const override of contractOverrides) {
+  const packageContract = packages.find(candidate => candidate.name === override.package);
+  const matchedEntrypoints = packageContract?.entrypoints.filter(candidate =>
+    override.entrypoints.includes(candidate.name)
+  ) ?? [];
+  if (matchedEntrypoints.length !== override.entrypoints.length) {
+    throw new Error(`PUBLIC_CONTRACT_OVERRIDE_ENTRYPOINT_STALE:${override.id}`);
+  }
+  for (const prefix of override.symbolPrefixes ?? []) {
+    if (!matchedEntrypoints.some(entrypoint => entrypoint.symbols.some(symbol => symbol.startsWith(prefix)))) {
+      throw new Error(`PUBLIC_CONTRACT_OVERRIDE_SYMBOL_PREFIX_STALE:${override.id}:${prefix}`);
+    }
+  }
+}
 
 for (const entry of packages) {
   const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -152,7 +197,7 @@ const foundation = JSON.parse(await readFile(resolve(root, 'docs/v0.9-foundation
 
 const inventory = {
   schemaVersion: 1,
-  release: '0.9.0-alpha.1',
+  release: '0.9.0',
   status: dispositionManifest.status,
   derivation: {
     packages: 'scripts/publishable-packages.mjs + packages/*/package.json',
@@ -216,6 +261,44 @@ function packageDispositions(
     if (!output.has(name)) throw new Error(`PUBLIC_CONTRACT_PACKAGE_UNCLASSIFIED:${name}`);
   }
   return output;
+}
+
+function validateContractOverrides(
+  overrides: readonly PublicContractOverride[],
+  packageNames: readonly string[],
+): readonly PublicContractOverride[] {
+  const knownPackages = new Set(packageNames);
+  const ids = new Set<string>();
+  for (const override of overrides) {
+    if (!override.id || ids.has(override.id)) {
+      throw new Error(`PUBLIC_CONTRACT_OVERRIDE_ID_INVALID:${override.id || '<empty>'}`);
+    }
+    ids.add(override.id);
+    if (!knownPackages.has(override.package)) {
+      throw new Error(`PUBLIC_CONTRACT_OVERRIDE_PACKAGE_UNKNOWN:${override.id}:${override.package}`);
+    }
+    if (
+      override.entrypoints.length === 0
+      || !override.owner
+      || override.evidence.length === 0
+      || !override.reason.trim()
+      || override.symbolPrefixes?.some(prefix => !prefix)
+    ) {
+      throw new Error(`PUBLIC_CONTRACT_OVERRIDE_INCOMPLETE:${override.id}`);
+    }
+  }
+  return overrides;
+}
+
+function explicitOverrideContract(override: PublicContractOverride) {
+  return {
+    override: override.id,
+    owner: override.owner,
+    maturity: override.maturity,
+    stability: override.stability,
+    evidence: override.evidence,
+    reason: override.reason,
+  } as const;
 }
 
 function inheritedContract(

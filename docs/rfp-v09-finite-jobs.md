@@ -8,7 +8,7 @@
 
 **Revised:** 2026-08-30
 
-**Target:** Applik8s v0.9; stable 1.0 candidate only after the conformance gates in this RFP pass
+**Target:** Applik8s v0.9 beta; stable 1.0 candidate only after the full deployed vertical in this RFP passes
 
 **Depends on:** Managed closures, application graph, operation authority, scheduling, runtime evidence,
 and the Effect Receipts, Fencing, and Unknown Outcomes RFP
@@ -76,9 +76,14 @@ second worker reclaims the expired lease, increments the attempt, commits the re
 first attempt without replacing the durable run identity.
 The same kernel now runs over the transactional `@applik8s/runtime-postgres/job-store` authority. Its
 OrbStack qualification passes the complete black-box suite and a concurrent two-runtime admission test,
-proving that scoped idempotency is serialized by the database rather than a process-local cache. This is
-durable control-plane evidence; it does not yet qualify Kubernetes workload execution as the maintained
-deployed provider.
+proving that scoped idempotency is serialized by the database rather than a process-local cache. The
+Kubernetes provider now also passes an authored `application.job()` → compiler → generated controller →
+digest-pinned worker Job vertical on OrbStack. That vertical proves typed admission, progress, durable
+result, controller replacement and reattachment, cancellation, and ownership-safe cleanup. Two defects
+found by that evidence—the compiler's missing worker entrypoint and the dispatcher's inability to accept a
+bare content-addressed local image ID—are covered by ordinary regression tests. The semantic surface remains
+beta because scheduled admission, application-fact publication, and the complete private queue/event
+dependency lowering are not yet qualified as one provider-neutral contract.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

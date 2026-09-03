@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/billing",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Provider-neutral billing models, payment capability, entitlement projection, and Starter adapter for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -38,13 +38,13 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/core": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/core": "0.9.0",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   },
   "peerDependencies": {
-    "@applik8s/billing-stripe": "0.8.0"
+    "@applik8s/billing-stripe": "0.9.0"
   },
   "peerDependenciesMeta": {
     "@applik8s/billing-stripe": {

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-postgres",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "PostgreSQL wire-client runtime for Applik8s models, commands, streams, and projections.",
   "license": "Apache-2.0",
   "type": "module",
@@ -68,8 +68,8 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0",
-    "@applik8s/core": "0.8.0",
+    "@applik8s/applik8s": "0.9.0",
+    "@applik8s/core": "0.9.0",
     "drizzle-orm": "^0.45.1",
     "postgres": "^3.4.7"
   }

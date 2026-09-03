@@ -3,7 +3,7 @@ import { publishablePackageManifestPaths } from './publishable-packages.mjs';
 
 const publishablePackages = publishablePackageManifestPaths;
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.8.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.9.0';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 const publishableManifests = new Map();
@@ -44,6 +44,14 @@ const requiredDocs = [
   'docs/release-evidence-v0.5.md',
   'docs/release-evidence-v0.6.md',
   'docs/release-evidence-v0.8.md',
+  'docs/manifesto-v09-semantic-completion-and-1.0-readiness.md',
+  'docs/v0.9-foundation.json',
+  'docs/v0.9-scorecard.json',
+  'docs/v0.9-acceptance.json',
+  'docs/v0.9-public-contract-dispositions.json',
+  'docs/v0.9-public-contract.json',
+  'docs/rfp-v09-application-plan-and-deployment-state-migration.md',
+  'docs/rfp-v09-public-contract-and-compatibility-freeze.md',
   'docs/v0.8-execution-plan.md',
   'docs/v0.8-reconciliation-ledger.md',
   'docs/v0.8-acceptance.json',
@@ -93,6 +101,12 @@ const publicReleaseFiles = [
   'scripts/build-celld-operator-release.mjs',
   'scripts/v08-release-evidence-contract.mjs',
   'scripts/verify-v08-live-evidence.mjs',
+  'scripts/check-v09-foundation.ts',
+  'scripts/check-v09-scorecard.ts',
+  'scripts/check-v09-live-evidence.ts',
+  'scripts/verify-v09-live-evidence.ts',
+  'scripts/write-v09-release-attestation.ts',
+  'scripts/v09-release-evidence-contract.ts',
   'scripts/publish-packages.mjs',
   'security/npm-audit-baseline.json',
   '.github/workflows/ci.yml',
@@ -284,12 +298,12 @@ for (const [path, requiredFragments] of requiredReleaseContracts) {
   try {
     contents = await readFile(path, 'utf8');
   } catch {
-    failures.push(`${path}: required v0.8 release contract is missing.`);
+    failures.push(`${path}: required ${releaseLabel} release contract is missing.`);
     continue;
   }
   for (const fragment of requiredFragments) {
     if (!contents.includes(fragment)) {
-      failures.push(`${path}: required v0.8 release invariant is missing: ${fragment}`);
+      failures.push(`${path}: required ${releaseLabel} release invariant is missing: ${fragment}`);
     }
   }
 }

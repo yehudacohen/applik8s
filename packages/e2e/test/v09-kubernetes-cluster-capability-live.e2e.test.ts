@@ -22,7 +22,7 @@ const ConfigMap = sdk.kubernetes.resource<{ readonly data?: Readonly<Record<stri
   apiVersion: 'v1', kind: 'ConfigMap', plural: 'configmaps', scope: 'Namespaced', access: 'connection',
 });
 
-describeLive('v0.9 Kubernetes cluster capability', () => {
+describeLive('v0.9 Kubernetes cluster binding parity on one control plane', () => {
   beforeAll(async () => {
     await assertExpectedKubectlContext();
     await kubectl(['create', 'namespace', namespace]);
@@ -33,7 +33,7 @@ describeLive('v0.9 Kubernetes cluster capability', () => {
     await waitForKubernetesResourceDeleted(`namespace/${namespace}`, 120_000);
   }, 150_000);
 
-  test('runs the same typed source through current and external host bindings with bounded mutation ownership', async () => {
+  test('runs the same typed source through two isolated bindings on the current cluster with bounded mutation ownership', async () => {
     const currentConfig = new KubeConfig();
     currentConfig.loadFromDefault();
     currentConfig.setCurrentContext(process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack');

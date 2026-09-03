@@ -248,9 +248,12 @@ history: the plan applies the profile's explicit orphan/retention grace, then ve
 consumer or migration depends on it. Shared/external materializations are never deleted by one consumer.
 Changing retention below a promised replay frontier is a destructive migration, not an optimization.
 
-If non-materialized heterogeneous federation cannot meet the alpha.6 gate, it remains beta. The stable
-surface still includes the catalog, direct single-source selection, and compiler-materialized multi-source
-selection. Provider optimization never blocks the public programming model.
+Until heterogeneous federation and normalized-stream materialization pass their deployed crash/recovery
+gate, they remain beta. The v0.9 stable surface is the catalog, direct single-source selection, and
+same-transactional-authority event sets. Cross-authority selection fails explicitly with
+`EVENT_MATERIALIZATION_REQUIRED`; it is not represented as a successful stable lowering. Once the
+materializer is qualified, it may broaden the stable surface without changing application syntax.
+Provider optimization never blocks or silently weakens the public programming model.
 
 ## Ordering and replay
 

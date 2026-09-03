@@ -4,9 +4,9 @@
 
 **Revised:** 2026-08-30
 
-**Target:** Applik8s v0.9 active-state migration from the released v0.8 baseline
+**Target:** Applik8s v0.9 active-state migration from the released v0.7.1 baseline
 
-**Depends on:** The exact released v0.8 package/artifact/plan schemas, Profiles and Concrete Provider
+**Depends on:** The exact released v0.7.1 package/artifact/graph schemas, Profiles and Concrete Provider
 Bindings, recursive implementation identity, Alchemy state, TypeKro lifecycle state, the Effect Receipts,
 Fencing, and Unknown Outcomes RFP, and versioned public-contract inventory schema conventions
 
@@ -30,7 +30,7 @@ adoption, and records enough state to resume or roll back every pre-commit inter
 
 ## Normative decisions
 
-1. Migration starts only from an exact released v0.8 baseline named by version, artifact schema, plan
+1. Migration starts only from an exact released v0.7.1 baseline named by version, artifact schema, plan
    schema, provider catalog digest, and evidence manifest.
 2. Reading an old plan is not migration. Active state is migrated only through a versioned migration run
    with durable receipts.
@@ -80,7 +80,7 @@ loaded migration codec. It does not guess from current application source.
 The checked-in qualification fixture must not say merely `v0.8`, `v0.8.x`, `latest`, or a branch name. It
 records the exact coordinated npm package versions, operator/host OCI digests, Git release tag and commit,
 application-artifact schema, `ApplicationPlan` schema, provider-catalog digest, TypeKro/Alchemy versions,
-and evidence-manifest digest. If v0.8 receives a later patch before v0.9 ships, each supported starting
+and evidence-manifest digest. If v0.7 receives a later patch before v0.9 ships, each supported starting
 release receives its own explicit source record and codec/evidence disposition.
 
 ## Identity mapping
@@ -282,14 +282,26 @@ MIGRATION_GITOPS_PROCEDURE_REQUIRED
 
 ## Implementation sequence
 
-The alpha.1 foundation implements steps 2 and 3 as a pure
+The alpha foundation implements steps 2 and 3 as a pure
 `ApplicationDeploymentMigrationProposal` mapper. Its output is permanently
 `mode: "read-only"` and `mutationAuthorized: false`; it does not read or write
-Alchemy, TypeKro, Kubernetes, GitOps, or provider state. The exact released
-v0.8 fixture required by step 1 is not currently available, so executable
-authority transfer and every deployment-state write remain gated off.
+Alchemy, TypeKro, Kubernetes, GitOps, or provider state. Step 4 is now backed by
+a versioned durable migration-run state machine, compare-and-swap state store
+contract, exclusive expiring leases, per-operation idempotency identities,
+physical-identity receipts, explicit unknown-outcome recovery, pre-commit
+rollback, and deletion-authority selection. Its interruption suite resumes from
+every persisted forward phase. The CLI has an atomic private file-store adapter.
+The exact released v0.7.1 identity fixture is recorded. The TypeKro/Kubernetes
+and Alchemy adapters, operation-wide stack lease, CLI `--migrate-from 0.7.1`
+path, durable local run store, exact legacy graph decoder, and released-build
+live upgrade are implemented. The live harness extracts the immutable v0.7.1
+tag, uses its Alchemy beta.58 and TypeKro 0.33.7 dependencies to create both
+direct and KRO state, then proves in-place UID preservation, target readiness,
+restart-safe state, and TypeKro-owned teardown under v0.9. GitOps-only state
+without the Alchemy identity/state pair remains an explicit reviewed procedure,
+not an automatic adoption path.
 
-1. Freeze and publish the exact v0.8 source fixtures, state snapshots, codecs, and live evidence.
+1. Freeze and publish the exact v0.7.1 source fixtures, state snapshots, codecs, and live evidence.
 2. Define stable recursive implementation identity and the v0.9 plan schema.
 3. Build the read-only mapper and ambiguity diagnostics.
 4. Implement migration state and lifecycle-authority transfer without provider mutation.
@@ -297,11 +309,11 @@ authority transfer and every deployment-state write remain gated off.
    receipt/fencing/unknown-outcome contract.
 6. Qualify preserve, replace, external, shared, retained, rollback, interruption, and deletion paths.
 7. Integrate deployment CLI, `plan`, `explain`, and GitOps procedures.
-8. Run live upgrades from the released v0.8 line before any dependent v0.9 provider is called stable.
+8. Run live upgrades from the released v0.7.1 line before any dependent v0.9 provider is called stable.
 
 ## Acceptance
 
-- Every released v0.8 plan and state fixture maps deterministically or fails before mutation.
+- Every supported v0.7.1 graph and state fixture maps deterministically or fails before mutation.
 - A live application upgrades without changing preserved resource UIDs or physical identities.
 - Shared, external, and retained resources preserve their lifecycle contract.
 - Interrupted migration resumes from every persisted phase.
@@ -322,7 +334,7 @@ authority transfer and every deployment-state write remain gated off.
 
 ## Definition of done
 
-The migration contract is complete when the exact released v0.8 baseline can upgrade, interrupt, resume,
+The migration contract is complete when the exact released v0.7.1 baseline can upgrade, interrupt, resume,
 roll back before commit, recover after commit, and delete safely under the v0.9 profile/provider model with
 at most one active lifecycle authority, an explicit bounded quiescent state, and complete source-attributed
 evidence.

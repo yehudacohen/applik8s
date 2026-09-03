@@ -22,6 +22,20 @@ export {
   proposeApplicationDeploymentMigration,
   serializeApplicationDeploymentMigrationProposal,
 } from './application-deployment-migration-proposal.js';
+export type * from './application-deployment-migration.js';
+export {
+  ApplicationDeploymentMigrationRunError,
+  ApplicationDeploymentMigrationUnknownOutcomeError,
+  advanceApplicationDeploymentMigration,
+  applicationDeploymentMigrationDeletionAuthority,
+  applicationDeploymentMigrationRunVersion,
+  createApplicationDeploymentMigrationRun,
+  createMemoryApplicationDeploymentMigrationRunStore,
+  requestApplicationDeploymentMigrationRollback,
+  resolveApplicationDeploymentMigrationUnknownOutcome,
+  serializeApplicationDeploymentMigrationRun,
+  startApplicationDeploymentMigration,
+} from './application-deployment-migration.js';
 export type * from './application-explain.js';
 export { explainApplicationGraph } from './application-explain.js';
 export type * from './application-foundation.js';

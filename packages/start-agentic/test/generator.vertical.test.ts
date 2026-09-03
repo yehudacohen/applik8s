@@ -275,14 +275,13 @@ describe('Agentic Start generator', () => {
       await readFile(join(target, 'src/routes/workspaces.index.tsx'), 'utf8'),
     ).toContain("createFileRoute('/workspaces/')");
     expect(researchView).toContain('Researcher,');
-    expect(researchView).toContain('const terminal = await Researcher(');
-    expect(researchView).toContain('{ threadId: conversationId, question: message }');
+    expect(researchView).toContain('createApplicationTanStackConnection({ agent: Researcher })');
+    expect(researchView).toContain('persistence: true');
+    expect(researchView).toContain('await sendMessage(message)');
+    expect(researchView).not.toContain('hydrateApplicationConversationMessage');
     expect(researchView).toContain('Research and publish');
     expect(researchView).not.toContain('useId');
-    expect(researchView).not.toContain('useChat(');
-    expect(researchView).toContain(
-      'hydrateApplicationConversationMessage',
-    );
+    expect(researchView).toContain('useChat({');
     expect(researchView).toContain('aria-label="Research conversation"');
     expect(researchView).toContain(
       "to: '/conversations/$conversationId'",

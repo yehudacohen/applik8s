@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/server",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Framework-neutral request scoping and Kubernetes gateway runtime for Applik8s web applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,10 +16,10 @@
     "directory": "packages/server"
   },
   "dependencies": {
-    "@applik8s/client": "0.8.0",
-    "@applik8s/core": "0.8.0",
-    "@applik8s/runtime": "0.8.0",
-    "@applik8s/sdk": "0.8.0",
+    "@applik8s/client": "0.9.0",
+    "@applik8s/core": "0.9.0",
+    "@applik8s/runtime": "0.9.0",
+    "@applik8s/sdk": "0.9.0",
     "@kubernetes/client-node": "^1.3.0"
   },
   "exports": {

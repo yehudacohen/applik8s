@@ -490,8 +490,8 @@ function validateInputIdentity(input: ApplicationDeploymentMigrationInput): void
 }
 
 function validateBaseline(baseline: ApplicationDeploymentMigrationBaseline): void {
-  if (!/^0\.8\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(baseline.release) || baseline.gitTag !== `v${baseline.release}`) {
-    throw new ApplicationDeploymentMigrationProposalError('MIGRATION_SOURCE_RELEASE_UNQUALIFIED', `Migration source ${baseline.release} is not an exact v0.8 release/tag pair.`);
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(baseline.release) || baseline.gitTag !== `v${baseline.release}`) {
+    throw new ApplicationDeploymentMigrationProposalError('MIGRATION_SOURCE_RELEASE_UNQUALIFIED', `Migration source ${baseline.release} is not an exact semantic-version release/tag pair.`);
   }
   if (!/^[a-f0-9]{40}$/u.test(baseline.commit)) {
     throw new ApplicationDeploymentMigrationProposalError('MIGRATION_SOURCE_RELEASE_UNQUALIFIED', 'Migration source commit must be a complete Git hash.');

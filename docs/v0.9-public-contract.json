@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "release": "0.9.0-alpha.1",
+  "release": "0.9.0",
   "status": "candidate-review-ready",
   "derivation": {
     "packages": "scripts/publishable-packages.mjs + packages/*/package.json",
@@ -19,7 +19,7 @@
   "packages": [
     {
       "name": "@applik8s/agents",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/agents",
       "description": "Maintained application-owned agent profile, version, execution-policy, and publication models for Applik8s.",
       "contract": {
@@ -90,7 +90,7 @@
     },
     {
       "name": "@applik8s/ai",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/ai",
       "description": "Provider-neutral logical AI models, agents, durable attempts, usage, and product records for Applik8s.",
       "contract": {
@@ -193,7 +193,7 @@
     },
     {
       "name": "@applik8s/ai-tanstack",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/ai-tanstack",
       "description": "Native TanStack AI tool, connection, compatibility, and runtime-context adapters for Applik8s.",
       "contract": {
@@ -311,7 +311,7 @@
     },
     {
       "name": "@applik8s/applik8s",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/applik8s",
       "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
       "contract": {
@@ -556,12 +556,24 @@
             "ApplicationDeploymentMigrationDiagnostic",
             "ApplicationDeploymentMigrationDirective",
             "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationFailure",
+            "ApplicationDeploymentMigrationHandoff",
             "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationLease",
             "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationOperation",
+            "ApplicationDeploymentMigrationPhase",
             "ApplicationDeploymentMigrationProposal",
             "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationProvider",
+            "ApplicationDeploymentMigrationProviderContext",
+            "ApplicationDeploymentMigrationReceipt",
+            "ApplicationDeploymentMigrationRun",
+            "ApplicationDeploymentMigrationRunError",
+            "ApplicationDeploymentMigrationRunStore",
             "ApplicationDeploymentMigrationSource",
             "ApplicationDeploymentMigrationTarget",
+            "ApplicationDeploymentMigrationUnknownOutcomeError",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -2171,6 +2183,7 @@
             "actor",
             "actorState",
             "adaptApplicationGraphCanonicalJsonV1",
+            "advanceApplicationDeploymentMigration",
             "app",
             "applicationAdmissionContextVersion",
             "applicationAdmissionIdentityView",
@@ -2182,7 +2195,9 @@
             "applicationCausalPrincipalContext",
             "applicationConfigurationBindingVersion",
             "applicationDatabaseHandle",
+            "applicationDeploymentMigrationDeletionAuthority",
             "applicationDeploymentMigrationProposalVersion",
+            "applicationDeploymentMigrationRunVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -2285,6 +2300,7 @@
             "createApplicationAssemblyProfileCatalog",
             "createApplicationAuthorizedReplayableStream",
             "createApplicationCommandGateway",
+            "createApplicationDeploymentMigrationRun",
             "createApplicationExecutionPrincipalV1",
             "createApplicationFetchGateway",
             "createApplicationInstallationClient",
@@ -2324,6 +2340,7 @@
             "createDurableApplicationSagaRuntime",
             "createGraphAdapter",
             "createHttpStructuredGenerationCapability",
+            "createMemoryApplicationDeploymentMigrationRunStore",
             "createMemoryApplicationSignalStore",
             "createObjectStorageApplicationLakehouseRuntime",
             "createPostgresApplicationCatalogStream",
@@ -2446,8 +2463,10 @@
             "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
+            "requestApplicationDeploymentMigrationRollback",
             "resolveApplicationActorInvocationAuthority",
             "resolveApplicationCallableProviderRuntimeEnvironment",
+            "resolveApplicationDeploymentMigrationUnknownOutcome",
             "resolveApplicationGraphProviderRequirement",
             "resolveApplicationImplementationPlan",
             "resolveOperatorInstalls",
@@ -2470,6 +2489,7 @@
             "secret",
             "secretRef",
             "serializeApplicationDeploymentMigrationProposal",
+            "serializeApplicationDeploymentMigrationRun",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationImplementationPlanSet",
@@ -2484,6 +2504,7 @@
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
+            "startApplicationDeploymentMigration",
             "stream",
             "targetFactory",
             "telemetryPolicy",
@@ -2542,7 +2563,1087 @@
           ],
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/applik8s:."
-          }
+          },
+          "symbolContracts": [
+            {
+              "name": "ApplicationJobBinding",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobCancellationReceipt",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobCancellationResult",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobCancellationWrite",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobCancelledError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobCancelledFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobClaimRequest",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobControllerRequestError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobDefinition",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobDynamicSchedule",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobEvents",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobExecution",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobFailedFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobFailure",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobHandler",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobHistoryRetentionContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobIdempotencyConflictError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobIdempotencyContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobInvocationOptions",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobInvocationTimeoutError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLease",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLeaseLostError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLeaseToken",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLifecycleFactContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLifecycleFactContracts",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobLifecycleFactKind",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobNode",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobOneTimeScheduleOptions",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobOptions",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobPayloadPurgeRequest",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobPayloadPurgeResult",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobProgressExpiredError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobProgressSnapshot",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobProgressWrite",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobProgressedFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobProviderUnsupportedError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRecurringScheduleOptions",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobReference",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRegistrar",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobResultExpiredError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobResultStoreProvider",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobResultStoreProviderToken",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRetryWrite",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRun",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRunError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRuntime",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRuntimeContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRuntimeProvider",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRuntimeProviderToken",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobRuntimeResolver",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobSchedules",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStartedFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStatusConflictResolutionContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStatusLifecycleContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStore",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStoreAdmission",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStoreAdmissionResult",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStoreInvariantError",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStorePhase",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStoredFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobStoredRun",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobSucceededFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobTaskContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobTerminalFailureContract",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobTerminalOutcome",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobTerminalWrite",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "ApplicationJobTimedOutFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "applicationJobLifecycleEvents",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "applicationJobLifecycleFact",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "applicationJobRuntime",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "applicationJobRuntimeProtocol",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "applicationJobStoreProtocol",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "createApplicationJobBinding",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "createApplicationJobReference",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "defaultApplicationJobLifecycleFactContracts",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "installApplicationJobRuntimeResolver",
+              "contract": {
+                "override": "finite-jobs-root-symbols",
+                "owner": "finite-execution",
+                "maturity": "beta",
+                "stability": "experimental",
+                "evidence": [
+                  "job-provider-conformance",
+                  "kubernetes-job-lifecycle"
+                ],
+                "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            }
+          ]
         },
         {
           "name": "./actor-authority-runtime",
@@ -3707,7 +4808,15 @@
           "source": "packages/applik8s/src/application-finite-jobs.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "finite-jobs-beta-entrypoints",
+            "owner": "finite-execution",
+            "maturity": "beta",
+            "stability": "experimental",
+            "evidence": [
+              "job-provider-conformance",
+              "kubernetes-job-lifecycle"
+            ],
+            "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
           },
           "symbols": [
             "ApplicationJobBinding",
@@ -3762,7 +4871,15 @@
           "source": "packages/applik8s/src/application-job-controller-runtime.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "finite-jobs-beta-entrypoints",
+            "owner": "finite-execution",
+            "maturity": "beta",
+            "stability": "experimental",
+            "evidence": [
+              "job-provider-conformance",
+              "kubernetes-job-lifecycle"
+            ],
+            "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
           },
           "symbols": [
             "ApplicationJobControllerHandlerOptions",
@@ -3777,7 +4894,15 @@
           "source": "packages/applik8s/src/application-job-durable-runtime.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "finite-jobs-beta-entrypoints",
+            "owner": "finite-execution",
+            "maturity": "beta",
+            "stability": "experimental",
+            "evidence": [
+              "job-provider-conformance",
+              "kubernetes-job-lifecycle"
+            ],
+            "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
           },
           "symbols": [
             "DurableApplicationJobRuntime",
@@ -3793,7 +4918,15 @@
           "source": "packages/applik8s/src/application-job-remote-runtime.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "finite-jobs-beta-entrypoints",
+            "owner": "finite-execution",
+            "maturity": "beta",
+            "stability": "experimental",
+            "evidence": [
+              "job-provider-conformance",
+              "kubernetes-job-lifecycle"
+            ],
+            "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
           },
           "symbols": [
             "ApplicationJobControllerRequestError",
@@ -3809,7 +4942,15 @@
           "source": "packages/applik8s/src/application-job-store.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "finite-jobs-beta-entrypoints",
+            "owner": "finite-execution",
+            "maturity": "beta",
+            "stability": "experimental",
+            "evidence": [
+              "job-provider-conformance",
+              "kubernetes-job-lifecycle"
+            ],
+            "reason": "The semantic kernel and maintained provider adapters are qualified, but the generated application.job compiler-to-worker recovery vertical remains a promotion gate."
           },
           "symbols": [
             "ApplicationJobCancellationWrite",
@@ -4112,12 +5253,24 @@
             "ApplicationDeploymentMigrationDiagnostic",
             "ApplicationDeploymentMigrationDirective",
             "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationFailure",
+            "ApplicationDeploymentMigrationHandoff",
             "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationLease",
             "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationOperation",
+            "ApplicationDeploymentMigrationPhase",
             "ApplicationDeploymentMigrationProposal",
             "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationProvider",
+            "ApplicationDeploymentMigrationProviderContext",
+            "ApplicationDeploymentMigrationReceipt",
+            "ApplicationDeploymentMigrationRun",
+            "ApplicationDeploymentMigrationRunError",
+            "ApplicationDeploymentMigrationRunStore",
             "ApplicationDeploymentMigrationSource",
             "ApplicationDeploymentMigrationTarget",
+            "ApplicationDeploymentMigrationUnknownOutcomeError",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -4845,6 +5998,7 @@
             "WithPermissionsFunction",
             "WorkflowGatewayCapability",
             "adaptApplicationGraphCanonicalJsonV1",
+            "advanceApplicationDeploymentMigration",
             "applicationAdmissionContextVersion",
             "applicationAdmissionIdentityView",
             "applicationAdmissionInvocationView",
@@ -4852,7 +6006,9 @@
             "applicationAdmissionRejectionCodeV1",
             "applicationCanonicalIdentity",
             "applicationCausalPrincipalContext",
+            "applicationDeploymentMigrationDeletionAuthority",
             "applicationDeploymentMigrationProposalVersion",
+            "applicationDeploymentMigrationRunVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -4893,9 +6049,11 @@
             "crd",
             "createApplicationAdmissionContextV1",
             "createApplicationAdmissionObservationV1",
+            "createApplicationDeploymentMigrationRun",
             "createApplicationExecutionPrincipalV1",
             "createApplicationRequestAdmissionContextV1",
             "createApplicationTelemetryEnvelopeV1",
+            "createMemoryApplicationDeploymentMigrationRunStore",
             "decideExternalDnsPublication",
             "decideExternalDnsPublicationDelete",
             "defaultDeniedTelemetryFields",
@@ -4936,13 +6094,16 @@
             "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
+            "requestApplicationDeploymentMigrationRollback",
             "resolveApplicationCallableProviderRuntimeEnvironment",
+            "resolveApplicationDeploymentMigrationUnknownOutcome",
             "resolveApplicationGraphProviderRequirement",
             "resolveApplicationImplementationPlan",
             "scopeContainsUnreviewedCode",
             "sdk",
             "secretRef",
             "serializeApplicationDeploymentMigrationProposal",
+            "serializeApplicationDeploymentMigrationRun",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationImplementationPlanSet",
@@ -4955,6 +6116,7 @@
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
+            "startApplicationDeploymentMigration",
             "toRuntimeSchema",
             "usesWorkflowGatewayCapability",
             "validateApplicationAdmissionContextV1",
@@ -5797,7 +6959,7 @@
     },
     {
       "name": "@applik8s/approvals",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/approvals",
       "description": "Canonical review queues and outcome-observation models over Applik8s grant requests.",
       "contract": {
@@ -5870,7 +7032,7 @@
     },
     {
       "name": "@applik8s/artifacts",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/artifacts",
       "description": "Typed canonical artifact metadata and object-reference models for Applik8s applications.",
       "contract": {
@@ -5943,7 +7105,7 @@
     },
     {
       "name": "@applik8s/billing",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/billing",
       "description": "Provider-neutral billing models, payment capability, entitlement projection, and Starter adapter for Applik8s.",
       "contract": {
@@ -6112,7 +7274,7 @@
     },
     {
       "name": "@applik8s/billing-stripe",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/billing-stripe",
       "description": "Server-only Stripe payment provider adapter for Applik8s billing.",
       "contract": {
@@ -6166,7 +7328,7 @@
     },
     {
       "name": "@applik8s/celld-operator",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/celld-operator",
       "description": "Applik8s-native Kubernetes operator for production Celld fleets.",
       "contract": {
@@ -6298,7 +7460,7 @@
     },
     {
       "name": "@applik8s/cli",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/cli",
       "description": "Build and deployment CLI for Applik8s applications.",
       "contract": {
@@ -6376,7 +7538,7 @@
     },
     {
       "name": "@applik8s/client",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/client",
       "description": "Browser-safe query, snapshot, resume, and external-store client for Applik8s applications.",
       "contract": {
@@ -6547,7 +7709,7 @@
     },
     {
       "name": "@applik8s/code-agent",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/code-agent",
       "description": "Provider-neutral code-agent composition, workspace leases, repository authority, and agent-harness contracts for Applik8s.",
       "contract": {
@@ -6682,7 +7844,7 @@
     },
     {
       "name": "@applik8s/compiler",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/compiler",
       "description": "Compiler and artifact pipeline for applik8s Kubernetes operators.",
       "contract": {
@@ -6933,7 +8095,7 @@
     },
     {
       "name": "@applik8s/conversations",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/conversations",
       "description": "Canonical conversation, message, protocol-run, run-event, and memory models for Applik8s applications.",
       "contract": {
@@ -7061,7 +8223,7 @@
     },
     {
       "name": "@applik8s/core",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/core",
       "description": "Core types and contracts for applik8s TypeScript Kubernetes operators.",
       "contract": {
@@ -7164,12 +8326,24 @@
             "ApplicationDeploymentMigrationDiagnostic",
             "ApplicationDeploymentMigrationDirective",
             "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationFailure",
+            "ApplicationDeploymentMigrationHandoff",
             "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationLease",
             "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationOperation",
+            "ApplicationDeploymentMigrationPhase",
             "ApplicationDeploymentMigrationProposal",
             "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationProvider",
+            "ApplicationDeploymentMigrationProviderContext",
+            "ApplicationDeploymentMigrationReceipt",
+            "ApplicationDeploymentMigrationRun",
+            "ApplicationDeploymentMigrationRunError",
+            "ApplicationDeploymentMigrationRunStore",
             "ApplicationDeploymentMigrationSource",
             "ApplicationDeploymentMigrationTarget",
+            "ApplicationDeploymentMigrationUnknownOutcomeError",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -7846,6 +9020,7 @@
             "WebhookReference",
             "WorkflowGatewayCapability",
             "adaptApplicationGraphCanonicalJsonV1",
+            "advanceApplicationDeploymentMigration",
             "applicationAdmissionContextVersion",
             "applicationAdmissionIdentityView",
             "applicationAdmissionInvocationView",
@@ -7853,7 +9028,9 @@
             "applicationAdmissionRejectionCodeV1",
             "applicationCanonicalIdentity",
             "applicationCausalPrincipalContext",
+            "applicationDeploymentMigrationDeletionAuthority",
             "applicationDeploymentMigrationProposalVersion",
+            "applicationDeploymentMigrationRunVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -7892,9 +9069,11 @@
             "canonicalJsonVersion",
             "createApplicationAdmissionContextV1",
             "createApplicationAdmissionObservationV1",
+            "createApplicationDeploymentMigrationRun",
             "createApplicationExecutionPrincipalV1",
             "createApplicationRequestAdmissionContextV1",
             "createApplicationTelemetryEnvelopeV1",
+            "createMemoryApplicationDeploymentMigrationRunStore",
             "defaultDeniedTelemetryFields",
             "deliverApplicationAdmissionObservationV1",
             "deriveApplicationGraphFoundation",
@@ -7918,11 +9097,14 @@
             "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
+            "requestApplicationDeploymentMigrationRollback",
             "resolveApplicationCallableProviderRuntimeEnvironment",
+            "resolveApplicationDeploymentMigrationUnknownOutcome",
             "resolveApplicationGraphProviderRequirement",
             "resolveApplicationImplementationPlan",
             "scopeContainsUnreviewedCode",
             "serializeApplicationDeploymentMigrationProposal",
+            "serializeApplicationDeploymentMigrationRun",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationImplementationPlanSet",
@@ -7932,6 +9114,7 @@
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
+            "startApplicationDeploymentMigration",
             "usesWorkflowGatewayCapability",
             "validateApplicationAdmissionContextV1",
             "validateApplicationAdmissionContextV1WithoutReceipt",
@@ -8053,7 +9236,7 @@
     },
     {
       "name": "@applik8s/data-lifecycle",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/data-lifecycle",
       "description": "Provider-neutral data lifecycle request state and progress vocabulary for Applik8s applications.",
       "contract": {
@@ -8120,7 +9303,7 @@
     },
     {
       "name": "@applik8s/deployment-alchemy",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-alchemy",
       "description": "Alchemy v2 deployment backend for Applik8s.",
       "contract": {
@@ -8174,7 +9357,9 @@
             "ApplicationAlchemyPlanResult",
             "ApplicationAlchemyRuntimeOptions",
             "ApplicationAlchemyStackIdentity",
+            "ApplicationAlchemyStackIdentityClaim",
             "ApplicationAlchemyStateOptions",
+            "ApplicationAlchemyStateSummary",
             "ApplicationAwsDeployment",
             "ApplicationAwsDeploymentOptions",
             "ApplicationAwsNativeMaterialization",
@@ -8190,9 +9375,12 @@
             "createApplicationAlchemyDeployment",
             "createApplicationAlchemyGraphDeployment",
             "createApplicationAwsDeployment",
+            "inspectApplicationAlchemyStackIdentityClaim",
+            "inspectApplicationAlchemyState",
             "materializeApplicationAwsNativeResources",
             "runApplicationAlchemyEffect",
-            "sameApplicationAlchemyStackIdentity"
+            "sameApplicationAlchemyStackIdentity",
+            "withApplicationAlchemyDeploymentLease"
           ],
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/deployment-alchemy:."
@@ -8202,7 +9390,7 @@
     },
     {
       "name": "@applik8s/deployment-compiler",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-compiler",
       "description": "Pure ApplicationGraph to ApplicationDeploymentGraph lowering for Applik8s.",
       "contract": {
@@ -8325,7 +9513,7 @@
     },
     {
       "name": "@applik8s/deployment-contract",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-contract",
       "description": "Portable deployment graph contracts for Applik8s applications.",
       "contract": {
@@ -8484,7 +9672,7 @@
     },
     {
       "name": "@applik8s/deployment-provider-harbor",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-provider-harbor",
       "description": "Harbor Alchemy provider resources for Applik8s deployment.",
       "contract": {
@@ -8534,7 +9722,7 @@
     },
     {
       "name": "@applik8s/deployment-provider-kubernetes",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-provider-kubernetes",
       "description": "Kubernetes-specific Alchemy provider resources for Applik8s deployment.",
       "contract": {
@@ -8588,7 +9776,7 @@
     },
     {
       "name": "@applik8s/deployment-provider-oci",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-provider-oci",
       "description": "OCI artifact Alchemy provider resources for Applik8s deployment.",
       "contract": {
@@ -8640,7 +9828,7 @@
     },
     {
       "name": "@applik8s/deployment-typekro",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/deployment-typekro",
       "description": "Version-pinned TypeKro deployment adapter for Applik8s.",
       "contract": {
@@ -8708,7 +9896,7 @@
     },
     {
       "name": "@applik8s/dev",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/dev",
       "description": "Independent reviewed development environment and coding-agent integration for Applik8s.",
       "contract": {
@@ -8894,7 +10082,7 @@
     },
     {
       "name": "@applik8s/documents",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/documents",
       "description": "Maintained mutable document, revision, provenance, and publication models for Applik8s applications.",
       "contract": {
@@ -8977,7 +10165,7 @@
     },
     {
       "name": "@applik8s/evals",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/evals",
       "description": "Versioned datasets, scorers, evaluation runs, and result models for Applik8s.",
       "contract": {
@@ -9072,7 +10260,7 @@
     },
     {
       "name": "@applik8s/identity",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/identity",
       "description": "Provider-neutral authentication flow, session, OAuth admission, and recovery contracts for Applik8s.",
       "contract": {
@@ -9241,7 +10429,7 @@
     },
     {
       "name": "@applik8s/identity-ory",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/identity-ory",
       "description": "Ory Kratos and Hydra adapters for the provider-neutral Applik8s identity and OAuth contracts.",
       "contract": {
@@ -9310,7 +10498,7 @@
     },
     {
       "name": "@applik8s/identity-postgres",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/identity-postgres",
       "description": "Durable PostgreSQL storage for Applik8s identity admission and OAuth authorization flows.",
       "contract": {
@@ -9359,7 +10547,7 @@
     },
     {
       "name": "@applik8s/integrations",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/integrations",
       "description": "Maintained provider-neutral integration connection intent and safe lifecycle-state models for Applik8s.",
       "contract": {
@@ -9429,7 +10617,7 @@
     },
     {
       "name": "@applik8s/knowledge",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/knowledge",
       "description": "Maintained provider-neutral knowledge-source, verified-object, ingestion, and indexing-state models for Applik8s.",
       "contract": {
@@ -9501,7 +10689,7 @@
     },
     {
       "name": "@applik8s/mcp",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/mcp",
       "description": "Provider-neutral MCP transport, catalog pinning, and external-tool trust boundaries for Applik8s.",
       "contract": {
@@ -9646,7 +10834,7 @@
     },
     {
       "name": "@applik8s/ml",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/ml",
       "description": "Provider-neutral typed predictive models, provenance receipts, and deterministic conformance execution for Applik8s.",
       "contract": {
@@ -9734,7 +10922,7 @@
     },
     {
       "name": "@applik8s/notifications",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/notifications",
       "description": "Provider-neutral transactional application notification delivery for Applik8s.",
       "contract": {
@@ -9832,7 +11020,7 @@
     },
     {
       "name": "@applik8s/notifications-smtp",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/notifications-smtp",
       "description": "Server-only SMTP notification delivery adapter for Applik8s.",
       "contract": {
@@ -9881,7 +11069,7 @@
     },
     {
       "name": "@applik8s/operations",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/operations",
       "description": "Provider-neutral operation catalog and authority lifecycle for Applik8s applications.",
       "contract": {
@@ -10023,7 +11211,7 @@
     },
     {
       "name": "@applik8s/operations-ui",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/operations-ui",
       "description": "Maintained, authority-preserving operations queries and React control-center surfaces for Applik8s.",
       "contract": {
@@ -10174,7 +11362,7 @@
     },
     {
       "name": "@applik8s/react",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/react",
       "description": "Router-independent React hooks for Applik8s live application queries.",
       "contract": {
@@ -10267,7 +11455,7 @@
     },
     {
       "name": "@applik8s/research",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/research",
       "description": "Provider-neutral durable research evidence, citation provenance, and specialized research-agent composition for Applik8s.",
       "contract": {
@@ -10394,7 +11582,7 @@
     },
     {
       "name": "@applik8s/runtime",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime",
       "description": "Runtime interfaces for applik8s operators.",
       "contract": {
@@ -10539,7 +11727,7 @@
     },
     {
       "name": "@applik8s/runtime-ai",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-ai",
       "description": "Bounded server runtime for Applik8s agent executions, native TanStack AI tools, and durable attempt identity.",
       "contract": {
@@ -10618,7 +11806,7 @@
     },
     {
       "name": "@applik8s/runtime-aws",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-aws",
       "description": "AWS runtime bindings for secrets, events, schedules, and lakehouse queries in Applik8s.",
       "contract": {
@@ -10809,7 +11997,7 @@
     },
     {
       "name": "@applik8s/runtime-celld",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-celld",
       "description": "celld-backed distributed durable actor runtime for Applik8s.",
       "contract": {
@@ -10882,7 +12070,7 @@
     },
     {
       "name": "@applik8s/runtime-contract",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-contract",
       "description": "Canonical runtime contract schemas and WIT for applik8s handlers.",
       "contract": {
@@ -10941,7 +12129,7 @@
     },
     {
       "name": "@applik8s/runtime-duckdb",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-duckdb",
       "description": "DuckDB-backed local lakehouse publication and query runtime for Applik8s.",
       "contract": {
@@ -10994,7 +12182,7 @@
     },
     {
       "name": "@applik8s/runtime-hatchet",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-hatchet",
       "description": "Hatchet workflow runtime for Applik8s workloads.",
       "contract": {
@@ -11065,7 +12253,7 @@
     },
     {
       "name": "@applik8s/runtime-kubernetes",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-kubernetes",
       "description": "Kubernetes API runtime adapters for Applik8s applications.",
       "contract": {
@@ -11254,7 +12442,7 @@
     },
     {
       "name": "@applik8s/runtime-nats",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-nats",
       "description": "NATS JetStream event-log and command-consumer runtime for Applik8s workloads.",
       "contract": {
@@ -11366,7 +12554,7 @@
     },
     {
       "name": "@applik8s/runtime-opensearch",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-opensearch",
       "description": "OpenSearch projection, query, rebuild, and cutover runtime for Applik8s search indexes.",
       "contract": {
@@ -11419,7 +12607,7 @@
     },
     {
       "name": "@applik8s/runtime-otel",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-otel",
       "description": "OpenTelemetry instrumentation and OTLP export runtime for Applik8s managed boundaries.",
       "contract": {
@@ -11472,7 +12660,7 @@
     },
     {
       "name": "@applik8s/runtime-postgres",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-postgres",
       "description": "PostgreSQL wire-client runtime for Applik8s models, commands, streams, and projections.",
       "contract": {
@@ -11695,7 +12883,7 @@
     },
     {
       "name": "@applik8s/runtime-s3",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/runtime-s3",
       "description": "S3-compatible object storage runtime for Applik8s workloads.",
       "contract": {
@@ -11743,7 +12931,7 @@
     },
     {
       "name": "@applik8s/sdk",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/sdk",
       "description": "TypeScript authoring SDK for applik8s Kubernetes operators.",
       "contract": {
@@ -11875,7 +13063,7 @@
     },
     {
       "name": "@applik8s/search",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/search",
       "description": "Provider-neutral search projection sources and PostgreSQL synchronization for Applik8s.",
       "contract": {
@@ -11928,7 +13116,7 @@
     },
     {
       "name": "@applik8s/server",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/server",
       "description": "Framework-neutral request scoping and Kubernetes gateway runtime for Applik8s web applications.",
       "contract": {
@@ -12071,7 +13259,7 @@
     },
     {
       "name": "@applik8s/start-agentic",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/start-agentic",
       "description": "The maintained Applik8s Agentic Start definition, modules, profiles, and generator overlay.",
       "contract": {
@@ -12308,7 +13496,7 @@
     },
     {
       "name": "@applik8s/tanstack-start",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/tanstack-start",
       "description": "Thin Nitro request-context and Vite build adapter for Applik8s TanStack Start applications.",
       "contract": {
@@ -12377,7 +13565,7 @@
     },
     {
       "name": "@applik8s/testing",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/testing",
       "description": "Source-owned application journeys, provider conformance, and local operator testing for Applik8s.",
       "contract": {
@@ -12511,7 +13699,7 @@
     },
     {
       "name": "@applik8s/typekro-adapter",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/typekro-adapter",
       "description": "TypeKro integration adapter for applik8s operators.",
       "contract": {
@@ -12655,7 +13843,7 @@
     },
     {
       "name": "@applik8s/typetainer",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/typetainer",
       "description": "Typed container image reference utilities for applik8s packages.",
       "contract": {
@@ -12711,7 +13899,7 @@
     },
     {
       "name": "@applik8s/usage",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/usage",
       "description": "Provider-neutral usage, cost, quota, and entitlement accounting models for Applik8s.",
       "contract": {
@@ -12917,7 +14105,7 @@
     },
     {
       "name": "@applik8s/vite",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/vite",
       "description": "Framework-neutral Vite build partitioning for Applik8s applications.",
       "contract": {
@@ -12970,7 +14158,7 @@
     },
     {
       "name": "@applik8s/web-retrieval-http",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/web-retrieval-http",
       "description": "Server-only bounded public HTTP source retrieval with DNS-pinned SSRF protection for Applik8s research agents.",
       "contract": {
@@ -13036,7 +14224,7 @@
     },
     {
       "name": "@applik8s/web-search",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/web-search",
       "description": "Provider-neutral bounded web search contracts and deterministic local execution for Applik8s.",
       "contract": {
@@ -13152,7 +14340,7 @@
     },
     {
       "name": "@applik8s/web-search-searxng",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/web-search-searxng",
       "description": "Server-only SearXNG web search and managed TypeKro deployment adapter for Applik8s.",
       "contract": {
@@ -13220,7 +14408,7 @@
     },
     {
       "name": "create-applik8s",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "directory": "packages/create-applik8s",
       "description": "Create an upstream-shaped TanStack Start application with an Applik8s Start overlay.",
       "contract": {
@@ -16482,10 +17670,47 @@
       ]
     },
     {
+      "code": "MIGRATION_CONCURRENT_OPERATION",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "MIGRATION_FORWARD_RECOVERY_REQUIRED",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
       "code": "MIGRATION_LIFECYCLE_TRANSFER_UNSAFE",
       "owner": "package:@applik8s/core",
       "sources": [
-        "packages/core/src/application-deployment-migration-proposal.ts"
+        "packages/core/src/application-deployment-migration-proposal.ts",
+        "packages/core/src/application-deployment-migration.ts"
       ],
       "maturity": "stable-1.0-candidate",
       "compatibility": [
@@ -16539,7 +17764,8 @@
       "code": "MIGRATION_PROVIDER_INCOMPATIBLE",
       "owner": "package:@applik8s/core",
       "sources": [
-        "packages/core/src/application-deployment-migration-proposal.ts"
+        "packages/core/src/application-deployment-migration-proposal.ts",
+        "packages/core/src/application-deployment-migration.ts"
       ],
       "maturity": "stable-1.0-candidate",
       "compatibility": [
@@ -16558,6 +17784,24 @@
       "owner": "package:@applik8s/core",
       "sources": [
         "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "MIGRATION_ROLLBACK_UNAVAILABLE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration.ts"
       ],
       "maturity": "stable-1.0-candidate",
       "compatibility": [
@@ -19036,7 +20280,7 @@
       {
         "name": "delete",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19060,7 +20304,7 @@
       {
         "name": "deploy",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19084,7 +20328,7 @@
       {
         "name": "destroy",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19156,7 +20400,7 @@
       {
         "name": "explain",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19180,7 +20424,7 @@
       {
         "name": "inspect",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 585,
+        "line": 589,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19252,7 +20496,7 @@
       {
         "name": "replay",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 584,
+        "line": 588,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19324,7 +20568,7 @@
       {
         "name": "status",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19348,7 +20592,7 @@
       {
         "name": "test",
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 603,
+        "line": 607,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19424,7 +20668,7 @@
         "flags": "--account-id <accountId>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19499,7 +20743,7 @@
         "flags": "--acknowledge <token>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19599,7 +20843,7 @@
         "flags": "--allow-breaking-changes",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19699,7 +20943,7 @@
         "flags": "--availability-zone <zone>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19724,7 +20968,7 @@
         "flags": "--aws-profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19749,7 +20993,7 @@
         "flags": "--aws-profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19774,7 +21018,7 @@
         "flags": "--aws-profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19799,7 +21043,7 @@
         "flags": "--bundle-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 585,
+        "line": 589,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19924,7 +21168,7 @@
         "flags": "--composition-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19949,7 +21193,7 @@
         "flags": "--composition-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19974,7 +21218,7 @@
         "flags": "--composition-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -19999,7 +21243,7 @@
         "flags": "--composition-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20024,7 +21268,7 @@
         "flags": "--composition-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20099,7 +21343,7 @@
         "flags": "--connection-bindings <path>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20124,7 +21368,7 @@
         "flags": "--connection-bindings <path>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20199,7 +21443,7 @@
         "flags": "--context <context>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20224,7 +21468,7 @@
         "flags": "--context <context>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20249,7 +21493,7 @@
         "flags": "--context <context>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20274,7 +21518,7 @@
         "flags": "--context <context>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20299,7 +21543,7 @@
         "flags": "--control-plane-namespace <namespace>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20324,7 +21568,7 @@
         "flags": "--control-plane-namespace <namespace>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20349,7 +21593,7 @@
         "flags": "--control-plane-namespace <namespace>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20374,7 +21618,7 @@
         "flags": "--development",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20424,7 +21668,7 @@
         "flags": "--endpoint <url>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20449,7 +21693,7 @@
         "flags": "--endpoint <url>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20474,7 +21718,7 @@
         "flags": "--endpoint <url>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20499,7 +21743,7 @@
         "flags": "--entrypoint <path>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20549,7 +21793,7 @@
         "flags": "--environment <environment>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20574,7 +21818,7 @@
         "flags": "--environment <environment>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20599,7 +21843,7 @@
         "flags": "--environment <environment>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20624,7 +21868,7 @@
         "flags": "--execute",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 585,
+        "line": 589,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20724,7 +21968,7 @@
         "flags": "--hosted-zone <suffix=zoneId>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20774,7 +22018,7 @@
         "flags": "--image-uri <uri>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20799,7 +22043,7 @@
         "flags": "--image-uri <uri>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20824,7 +22068,7 @@
         "flags": "--image-uri <uri>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20899,7 +22143,7 @@
         "flags": "--instance <path>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20924,7 +22168,7 @@
         "flags": "--instance-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20949,7 +22193,7 @@
         "flags": "--instance-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -20974,7 +22218,7 @@
         "flags": "--instance-name <name>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21124,7 +22368,7 @@
         "flags": "--json",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21149,7 +22393,7 @@
         "flags": "--json",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21174,7 +22418,7 @@
         "flags": "--json",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 585,
+        "line": 589,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21200,6 +22444,56 @@
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
         "line": 218,
+        "contract": {
+          "disposition": "compiler-and-deployment",
+          "owner": "compiler-and-deployment",
+          "maturity": "stable-1.0-candidate",
+          "compatibility": [
+            "artifact",
+            "generated-source",
+            "provider",
+            "lifecycle"
+          ],
+          "stability": "stable",
+          "documentation": "docs/packages.md",
+          "evidence": [
+            "workspace-typecheck",
+            "clean-package-consumer",
+            "deployment-lifecycle",
+            "public-contract-freeze"
+          ]
+        }
+      },
+      {
+        "flags": "--migrate-from <release>",
+        "required": false,
+        "source": "packages/cli/src/cli-implementation.ts",
+        "line": 312,
+        "contract": {
+          "disposition": "compiler-and-deployment",
+          "owner": "compiler-and-deployment",
+          "maturity": "stable-1.0-candidate",
+          "compatibility": [
+            "artifact",
+            "generated-source",
+            "provider",
+            "lifecycle"
+          ],
+          "stability": "stable",
+          "documentation": "docs/packages.md",
+          "evidence": [
+            "workspace-typecheck",
+            "clean-package-consumer",
+            "deployment-lifecycle",
+            "public-contract-freeze"
+          ]
+        }
+      },
+      {
+        "flags": "--migrate-from <release>",
+        "required": false,
+        "source": "packages/cli/src/cli-implementation.ts",
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21399,7 +22693,7 @@
         "flags": "--out-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21424,7 +22718,7 @@
         "flags": "--out-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21449,7 +22743,7 @@
         "flags": "--out-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21474,7 +22768,7 @@
         "flags": "--out-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21499,7 +22793,7 @@
         "flags": "--out-dir <dir>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21524,7 +22818,7 @@
         "flags": "--plan-only",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21674,7 +22968,7 @@
         "flags": "--profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21699,7 +22993,7 @@
         "flags": "--profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21724,7 +23018,7 @@
         "flags": "--profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21749,7 +23043,7 @@
         "flags": "--profile <profile>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 553,
+        "line": 557,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21824,7 +23118,7 @@
         "flags": "--region <region>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21874,7 +23168,7 @@
         "flags": "--runtime-entrypoint <path>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21924,7 +23218,7 @@
         "flags": "--skip-app-build",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21949,7 +23243,7 @@
         "flags": "--skip-app-build",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 569,
+        "line": 573,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -21974,7 +23268,7 @@
         "flags": "--skip-image-build",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -22049,7 +23343,7 @@
         "flags": "--strategy <strategy>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 401,
+        "line": 403,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -22124,7 +23418,7 @@
         "flags": "--target <target>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 492,
+        "line": 496,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",
@@ -22149,7 +23443,7 @@
         "flags": "--target <target>",
         "required": false,
         "source": "packages/cli/src/cli-implementation.ts",
-        "line": 523,
+        "line": 527,
         "contract": {
           "disposition": "compiler-and-deployment",
           "owner": "compiler-and-deployment",

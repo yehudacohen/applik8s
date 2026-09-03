@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationDeploymentIdentity } from "@applik8s/deployment-contract";
+import type { PersistedState } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -8,7 +9,11 @@ import {
   applicationAlchemyStackIdentity,
   applicationAlchemyStateService,
   claimApplicationAlchemyStackIdentity,
+  inspectApplicationAlchemyStackIdentityClaim,
+  inspectApplicationAlchemyState,
+  withApplicationAlchemyDeploymentLease,
 } from "../src/index.js";
+import { withDeploymentLease } from "../src/deployment-lease.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -92,6 +97,81 @@ describe("Alchemy backend identity and state", () => {
     ]);
   });
 
+  it("inspects identity and state structurally without exposing persisted values", async () => {
+    const root = await temporaryRoot();
+    const stackIdentity = applicationAlchemyStackIdentity(
+      identity("notes", "local"),
+      "kro",
+    );
+    await claimApplicationAlchemyStackIdentity(root, stackIdentity);
+    const service = applicationAlchemyStateService({ root });
+    const resource: PersistedState = {
+      kind: "resource",
+      resourceType: "Example.Resource",
+      namespace: undefined,
+      fqn: "example",
+      logicalId: "example",
+      instanceId: "instance-1",
+      providerVersion: 1,
+      status: "created",
+      downstream: [],
+      bindings: [],
+      props: { revision: "one" },
+      attr: { endpoint: "https://example.test" },
+    };
+    await Effect.runPromise(
+      service.set({
+        stack: stackIdentity.key,
+        stage: "local",
+        fqn: resource.fqn,
+        value: resource,
+      }),
+    );
+    await Effect.runPromise(
+      service.setOutput({
+        stack: stackIdentity.key,
+        stage: "local",
+        value: { ready: true },
+      }),
+    );
+
+    await expect(
+      inspectApplicationAlchemyStackIdentityClaim(root, stackIdentity),
+    ).resolves.toMatchObject({
+      version: 2,
+      key: stackIdentity.key,
+      digest: stackIdentity.digest,
+      canonical: stackIdentity.canonical,
+      strategy: "kro",
+    });
+    await expect(
+      inspectApplicationAlchemyState({
+        root,
+        stack: stackIdentity.key,
+        stage: "local",
+      }),
+    ).resolves.toEqual({
+      stack: stackIdentity.key,
+      stage: "local",
+      exists: true,
+      resourceCount: 1,
+      hasStackOutput: true,
+    });
+    await expect(
+      inspectApplicationAlchemyState({
+        root,
+        stack: stackIdentity.key,
+        stage: "missing",
+      }),
+    ).resolves.toEqual({
+      stack: stackIdentity.key,
+      stage: "missing",
+      exists: false,
+      resourceCount: 0,
+      hasStackOutput: false,
+    });
+  });
+
   it("rejects plaintext credentials and resolved Redacted envelopes", async () => {
     const service = applicationAlchemyStateService({
       root: await temporaryRoot(),
@@ -142,6 +222,71 @@ describe("Alchemy backend identity and state", () => {
       retryIntervalMs: 5,
     });
     await second.release();
+  });
+
+  it("holds one operation-wide lease while nested deployment phases borrow it", async () => {
+    const root = await temporaryRoot();
+    const stack = applicationAlchemyStackIdentity(identity("notes", "local"), "kro");
+    let nestedRan = false;
+
+    await withApplicationAlchemyDeploymentLease(
+      {
+        stateRoot: root,
+        owner: "migration",
+        leaseTtlMs: 2_000,
+      },
+      stack,
+      async (lease) => {
+        await withDeploymentLease(
+          {
+            stateRoot: root,
+            lease,
+            leaseTtlMs: 2_000,
+          },
+          stack,
+          async () => {
+            nestedRan = true;
+          },
+        );
+        await expect(
+          acquireApplicationAlchemyLease(root, stack, {
+            owner: "competing-writer",
+            ttlMs: 2_000,
+            acquireTimeoutMs: 30,
+            retryIntervalMs: 5,
+          }),
+        ).rejects.toThrow(/locked by migration/);
+      },
+    );
+
+    expect(nestedRan).toBe(true);
+    const next = await acquireApplicationAlchemyLease(root, stack, {
+      owner: "next-operation",
+      ttlMs: 2_000,
+      acquireTimeoutMs: 100,
+      retryIntervalMs: 5,
+    });
+    await next.release();
+  });
+
+  it("rejects borrowing a lease from a different deployment identity", async () => {
+    const root = await temporaryRoot();
+    const first = applicationAlchemyStackIdentity(identity("notes", "local"), "kro");
+    const second = applicationAlchemyStackIdentity(identity("tasks", "local"), "kro");
+    const lease = await acquireApplicationAlchemyLease(root, first, {
+      owner: "migration",
+      ttlMs: 2_000,
+      acquireTimeoutMs: 100,
+      retryIntervalMs: 5,
+    });
+    await expect(
+      withDeploymentLease(
+        { stateRoot: root, lease, leaseTtlMs: 2_000 },
+        second,
+        async () => undefined,
+      ),
+    ).rejects.toThrow(/cannot authorize deployment/);
+    await lease.release();
   });
 });
 

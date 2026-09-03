@@ -83,7 +83,7 @@ export const StructuredGeneration: ApplicationStructuredGenerationProviderToken 
     }
     return maintainedApplicationCapabilityImplementation(
       StructuredGeneration as ApplicationProviderToken<ApplicationStructuredGenerationHttpProvider>, {
-      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.http', version: '0.9.0-alpha.1' },
+      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.http', version: '0.9.0' },
       value: { kind: 'structured-generation-http', ...options },
       runtimeAdapter: '@applik8s/runtime-ai',
       readiness: 'applik8s.structured-generation.http.readiness/v1alpha1',
@@ -99,7 +99,7 @@ export const StructuredGeneration: ApplicationStructuredGenerationProviderToken 
     }
     return maintainedApplicationCapabilityImplementation(
       StructuredGeneration as ApplicationProviderToken<ApplicationStructuredGenerationDeterministicProvider>, {
-      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.deterministic', version: '0.9.0-alpha.1' },
+      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.deterministic', version: '0.9.0' },
       value: { kind: 'structured-generation-deterministic', ...options },
       runtimeAdapter: '@applik8s/runtime-ai',
       readiness: 'applik8s.structured-generation.deterministic.readiness/v1alpha1',

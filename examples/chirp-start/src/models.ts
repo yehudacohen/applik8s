@@ -28,6 +28,7 @@ export { RebuildHomeTimelines } from './recovery/timeline';
 export { AutomationScheduleChanges, AutomationScheduleReconciler } from './streams/automation';
 export { FollowAnalytics, FollowChanges, HistoricalEngagementPublication, HistoricalEngagementRow, ReactionAnalytics, ReactionBatchReceipts, ReactionChanges } from './streams/engagement';
 export { MediaUploads, MediaVerification } from './streams/media';
+export { PostLifecycleFacts, PostWriteFacts } from './streams/catalog';
 export { PostTimelineChanges, PublishedPosts } from './streams/post-stream';
 export { PostAnalytics, PostDeletionLifecycle, PostPublicationLifecycle, PostUpdateLifecycle } from './streams/publication';
 export { HomeTimeline } from './streams/timeline';

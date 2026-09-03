@@ -490,7 +490,7 @@ function validateOptions(options: KubernetesApplicationJobDispatcherOptions): vo
   required(options.applicationId, 'Kubernetes Job applicationId');
   required(options.deploymentId, 'Kubernetes Job deploymentId');
   required(options.namespace, 'Kubernetes Job namespace');
-  if (!/@sha256:[a-f0-9]{64}$/u.test(options.image)) {
+  if (!/(?:@sha256:|^sha256:)[a-f0-9]{64}$/u.test(options.image)) {
     throw new TypeError('Kubernetes Job image must be pinned to an immutable sha256 digest.');
   }
   for (const variable of options.environment ?? []) {

@@ -2,17 +2,23 @@
   "apiVersion": "applik8s.agenticStartSourceBudget/v1alpha1",
   "maximumNonblankLines": 500,
   "maximumFilesPerFeature": 5,
+  "perFileNonblankLineExceptions": {
+    "src/features/billing.tsx.tmpl": {
+      "maximum": 560,
+      "reason": "Application-owned plans, entitlements, workspace budget policy, provider routes, and simulated Starter behavior remain visible in the generated product; generic billing contracts and provider mechanics live in maintained packages."
+    }
+  },
   "ownership": {
-    "maximumApplicationBehaviorFiles": 52,
-    "maximumApplicationBehaviorNonblankLines": 7000,
+    "maximumApplicationBehaviorFiles": 57,
+    "maximumApplicationBehaviorNonblankLines": 7650,
     "maximumRouteDeclarationNonblankLines": 220,
     "maximumDesignPrimitiveNonblankLines": 300
   },
   "categories": {
-    "features": { "baseline": 39, "maximum": 39 },
+    "features": { "baseline": 42, "maximum": 42 },
     "routes": { "baseline": 34, "maximum": 34 },
     "design": { "baseline": 20, "maximum": 20 },
     "deployment": { "baseline": 7, "maximum": 8 },
-    "other": { "baseline": 14, "maximum": 14 }
+    "other": { "baseline": 19, "maximum": 19 }
   }
 }

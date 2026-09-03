@@ -82,8 +82,10 @@ export const ReplicateWorkload = application.job(
    TypeKro's Alchemy integration.
 8. Replacing cluster identity, endpoint trust, credential authority, or mutation ownership is a migration.
 9. Cluster access is an explicit portability constraint on only the executions that use it.
-10. v0.9 qualifies the current/local cluster and one external cluster binding; broad multi-cloud cluster
-    provisioning is not in scope.
+10. v0.9 qualifies the current/local cluster contract. A genuinely independent external-cluster binding
+    remains beta until a second credential and control-plane boundary proves isolation, replacement, and
+    lifecycle behavior; pointing two bindings at one context is useful parity evidence, not remote-cluster
+    qualification. Broad multi-cloud cluster provisioning is not in scope.
 11. A cluster implementation/reference is a composable implementation dependency. Operator, Actor,
     managed-store, and other providers may accept it directly without making cluster access visible to
     their application callbacks; explicit callback access still requires providing and using the cluster

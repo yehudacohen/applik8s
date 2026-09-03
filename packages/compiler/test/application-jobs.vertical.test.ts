@@ -216,6 +216,7 @@ describe('generated Kubernetes finite Job controller', () => {
       const source = await readFile(artifact!.sourcePath, 'utf8');
       expect(source).toContain('applik8s-job-run');
       expect(source).toContain('batch/v1');
+      expect(source).toContain('workerCommand:["node","/app/job-controller.mjs"]');
       expect(source).not.toContain('npm install');
       expect(artifact?.container.baseImage).toMatch(/@sha256:/);
       const [http] = await emitGeneratedApplicationHttpServers({

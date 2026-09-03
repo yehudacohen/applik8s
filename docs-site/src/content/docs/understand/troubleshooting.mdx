@@ -3,10 +3,11 @@ title: Diagnose a failure
 description: Start from a stable diagnostic, prove the cause, and apply the bounded remediation.
 ---
 
-## `V09_BASELINE_RELEASE_UNAVAILABLE`
+## `V09_MIGRATION_EXECUTION_UNQUALIFIED`
 
-The migration planner cannot prove an exact released v0.8 baseline. Confirm the package/tag/graph manifest,
-then rerun the read-only proposal. Do not substitute source-candidate state; mutation remains disabled.
+The migration planner has the exact v0.7.1 release baseline, but the active-state handoff fixture has not
+yet qualified mutation. Run the read-only proposal and the exact migration-execution gate; do not infer
+write authority from source compatibility alone.
 
 ## `JOURNEY_PROVIDER_INCOMPATIBLE`
 

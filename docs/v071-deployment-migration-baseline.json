@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "release": "0.7.1",
+  "gitTag": "v0.7.1",
+  "commit": "3d482707d70e868c9e20267650c9ebfda573bc98",
+  "applicationArtifactSchema": "applik8s.appGraph/v1alpha1",
+  "applicationPlanSchema": "applik8s.applicationPlan/absent-v0.7.1",
+  "deploymentGraphCompilerVersion": "0.6.0",
+  "alchemy": "2.0.0-beta.58",
+  "typekro": "0.33.7",
+  "providerCatalog": {
+    "algorithm": "sha256 of '<file-sha256>  <repository-path>\\n' records sorted by repository path",
+    "digest": "sha256:a76d01d9a16e8a0d4259c625c003384638f31d459539554392c44aeda826bbc8",
+    "files": [
+      {
+        "path": "packages/applik8s/src/application-profiles.ts",
+        "sha256": "075305b7e3d8ede959f675cf46910476d76f29ba3eeab4c6c01743b3d29945ad"
+      },
+      {
+        "path": "packages/applik8s/src/application-provider-dependencies.ts",
+        "sha256": "2a0798e37545f475120ccd32862f7e358146759e6ed09afa449826fa2e6212d9"
+      },
+      {
+        "path": "packages/applik8s/src/application-provider-qualification.ts",
+        "sha256": "bad06cddd2392645568f4a0531cb7e0dbbd893bfd2a2151381151f12e4ceef33"
+      },
+      {
+        "path": "packages/applik8s/src/application-providers.ts",
+        "sha256": "704bd7f8c2944acc67c0a3dda9cdeaae0d0fb9f2e5c659077c8b54924a554a9e"
+      }
+    ]
+  },
+  "stateContracts": [
+    {
+      "path": "packages/deployment-contract/src/types.ts",
+      "sha256": "3441e52b1c5e120cf3d0cfaa7890a42059b0e808a5d5f56a285be88d34d56656"
+    },
+    {
+      "path": "packages/deployment-alchemy/src/state.ts",
+      "sha256": "d7ad9c33ff697189263a42a179a8b16353caef5a4a216481e1b1d86a4bafffc3"
+    },
+    {
+      "path": "packages/deployment-alchemy/src/identity.ts",
+      "sha256": "13142307c0bb3ffee26caae0069424fbd2e6e8274f0d09156dd7fe7bc4f12b0c"
+    },
+    {
+      "path": "packages/compiler/src/application-deployment-graph.ts",
+      "sha256": "668c6345043192f13f52d9c9e2299205feb58913b0a72090b048d8c7c9e9a9fa"
+    }
+  ],
+  "runtimeProtocolVersions": ["applik8s.runtime/v1alpha1"],
+  "evidenceManifest": {
+    "path": "docs/v07-acceptance-manifest.json",
+    "sha256": "78c2f708283fb7367ebe32c7f0d82fffebd1a36bb4dd12d0dc23fc2903b18498"
+  }
+}
