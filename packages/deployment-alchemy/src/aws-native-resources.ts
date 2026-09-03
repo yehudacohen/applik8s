@@ -6,10 +6,7 @@ import type {
   ApplicationAwsPlanResource,
   DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
-import { Endpoint } from "@distilled.cloud/aws";
-import { Credentials } from "@distilled.cloud/aws/Credentials";
 import type * as ecs from "@distilled.cloud/aws/ecs";
-import { Region } from "@distilled.cloud/aws/Region";
 import * as secretsmanager from "@distilled.cloud/aws/secrets-manager";
 import * as AWS from "alchemy/AWS";
 import { fromEnvironment as awsCredentialsFromEnvironment } from "alchemy/AWS/Credentials";
@@ -153,24 +150,18 @@ export function applicationAwsNativeProviders(options: ApplicationAwsNativeProvi
     sessionToken: optionalRedacted(options.environment?.AWS_SESSION_TOKEN ?? process.env.AWS_SESSION_TOKEN),
     region: options.region,
   });
-  const local = options.endpoint !== undefined;
-  const environment = local
-    ? Layer.succeed(AWS.AWSEnvironment, Effect.succeed({
-        accountId: options.accountId,
-        region: options.region,
-        credentials: localCredentials,
-        endpoint: options.endpoint,
-      }))
-    : AWS.Default;
-  const credentials = local
-    ? Layer.succeed(Credentials, localCredentials)
-    : awsCredentialsFromEnvironment;
-  const region = local
-    ? Layer.succeed(Region, Effect.succeed(options.region))
-    : awsRegionFromEnvironment;
-  const endpoint = local
-    ? Layer.succeed(Endpoint.Endpoint, Effect.succeed(options.endpoint))
-    : awsEndpointFromEnvironment;
+  // The deployment boundary already has an explicit account, region, and
+  // confined credential environment. Materialize that authority directly
+  // instead of falling through Alchemy's interactive AuthProvider lookup.
+  const environment = Layer.succeed(AWS.AWSEnvironment, Effect.succeed({
+    accountId: options.accountId,
+    region: options.region,
+    credentials: localCredentials,
+    ...(options.endpoint ? { endpoint: options.endpoint } : {}),
+  }));
+  const credentials = awsCredentialsFromEnvironment;
+  const region = awsRegionFromEnvironment;
+  const endpoint = awsEndpointFromEnvironment;
   return Layer.effect(
     AWS.Providers,
     Provider.collection([
