@@ -65,7 +65,7 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `d023005` before
+The branch `codex/v0.9-semantic-completion` is pushed through `2469d9e` before
 the current Saga slice. Completed foundations include concrete
 provider planning, deployment migration proposals, journey declarations, the
 documentation site foundation, shared effect-safety primitives, Job vocabulary
@@ -401,18 +401,25 @@ rather than executing in workflow history. Chirp's media verification uses this
 function-native path and its pure signature helpers remain independently
 importable without initializing the application graph.
 
-The contract-mode v0.9 scorecard has 22 gates: 18 passing, one intentionally
-in progress, and three blocked. The public-contract inventory is
+The contract-mode v0.9 scorecard has 25 gates: 19 passing, two intentionally
+non-release-blocking provider-expansion lanes blocked, two exact-candidate
+foundation/product gates awaiting manifest promotion, and two credentialed
+release lanes blocked. The public-contract inventory is
 `candidate-review-ready`, but the maintainer-owned freeze remains open and must
-not be promoted implicitly. Exact released-v0.8 migration remains blocked
-because no authoritative released v0.8 baseline is available. The managed
-research journey remains blocked on explicit OpenRouter credential authority,
-and real AWS lifecycle qualification remains blocked on explicit account,
-region, credentials, and cost/destructive-action authority. Chirp's production
-Kubernetes lifecycle and the named Kubernetes-cluster capability are now
-passing. The source candidate is not substituted for the missing release
-baseline, and credentials are not copied into OrbStack without explicit
-destination authorization.
+not be promoted implicitly. The exact released-v0.7.1 baseline is now recorded,
+and a clean committed-candidate OrbStack migration proved fenced ownership
+handoff, physical UID preservation, readiness, and TypeKro-ordered teardown.
+The same candidate also passed the complete generated Agentic Start product
+journey. Their authoritative manifests still need promotion after maintainer
+approval, after which both exact-candidate receipts must be regenerated from
+the final commit. The managed research journey remains blocked on explicit
+OpenRouter credential authority, and real AWS lifecycle qualification remains
+blocked on explicit account, region, credentials, and cost/destructive-action
+authority. Multi-authority event federation and a genuinely independent second
+Kubernetes cluster remain truthful non-release-blocking beta lanes. Chirp's
+production Kubernetes lifecycle and the named current-cluster capability are
+passing. Credentials are not copied into OrbStack without explicit destination
+authorization.
 
 The npm audit gate was not executed because its registry request transmits the
 candidate dependency graph and execution authority was not granted. This is an
