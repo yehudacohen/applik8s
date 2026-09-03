@@ -18,3 +18,53 @@ remove the assertion only if it is genuinely outside the product contract. The r
 
 Read the diagnostic's node, capability, required guarantee, and configuration provenance. Correct the
 ambiguous or missing binding, rerun `applik8s explain`, and review the new plan digest before applying.
+
+## A provider never becomes ready
+
+Check the observed generation and the physical resource named by the plan. Readiness must come from observed
+provider state, not the desired version or an old `Ready=True` condition. Then inspect the provider's dependencies:
+Secret keys, storage classes, external namespaces, controllers, and network policy are common causes. Repair the
+owning dependency and redeploy through the same lifecycle owner.
+
+Do not manually delete an RGD while its KRO instance is finalizing. Use the originating Applik8s/Alchemy/TypeKro
+destroy path so instance children disappear before their definition. Direct Kubernetes intervention is a final
+recovery action for a proven disposable resource whose controller can no longer make progress.
+
+## A durable call timed out
+
+A caller timeout does not prove the effect failed. Inspect the durable result or receipt using the same principal,
+context, target, and idempotency identity. `unknown` means the provider may have committed while observation was
+lost; reconcile or reattach instead of issuing a new unscoped side effect.
+
+For workflows and Jobs, distinguish observation timeout from execution cancellation. Cancelling an HTTP request
+does not implicitly cancel durable work. Use the typed run handle when product policy genuinely authorizes
+cancellation.
+
+## A live query stops updating
+
+First run the bounded snapshot query. If the snapshot is correct, inspect subscription authorization, cursor
+context, and the invalidation source. If it is stale, inspect the authoritative model and projection checkpoint.
+Never advance a checkpoint before output commit, and never treat a broker acknowledgement as authoritative model
+state.
+
+## A generated application fails to build
+
+Run the generated doctor and typecheck before deployment. Verify that browser code imports only browser-safe
+entrypoints and that managed closures use focused handler-safe imports. A helper referenced from a serialized
+closure must be discoverable through the application-owned module graph; unresolved closure dependencies fail
+closed rather than being replaced with runtime globals.
+
+## A release evidence check fails
+
+Receipts are valid only for the exact commit and working-tree digest, current environment identity, declared
+assertion set, and bounded age. Finish source changes first, commit the candidate, then rerun every release-blocking
+suite. Do not edit receipts or acceptance statuses by hand to make an older run appear current.
+
+The release gate intentionally distinguishes `FAIL`, `NOT IMPLEMENTED`, and `NOT TESTED`. A narrow provider smoke
+test does not qualify an entire product profile.
+
+## Escalation checklist
+
+When reporting a problem, include the stable diagnostic code, plan or run identity, public resource identity,
+observed generation, provider/profile name, and redacted receipt. Exclude Secret values, bearer tokens, raw
+trusted-context envelopes, and unrelated cluster or account state.

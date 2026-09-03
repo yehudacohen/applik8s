@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 // Every case imports a different generated application bundle. Native ESM
@@ -7,15 +8,10 @@ import { resolve } from 'node:path';
 // rather than to one compiler invocation. Process isolation is the bounded
 // test contract; increasing Node's heap would only move the failure threshold.
 const file = 'packages/compiler/test/application-workflows.vertical.test.ts';
-const cases = [
-  'delegates Hatchet infrastructure and emits only the production worker lifecycle',
-  'lowers workflow.emitSignal as a compiler-known durable capability without bundling the application registrar',
-  'uses the provisioned Hatchet chart worker-token Secret by default',
-  'lowers a typed online-projection rebuild into the workflow worker',
-  'rejects external effects hidden in module-scope workflow helpers',
-  'fails closed when KEDA task-stat scaling cannot name a Hatchet tenant',
-  'binds an externally managed Hatchet runtime without generating provider infrastructure',
-];
+const source = await readFile(resolve(file), 'utf8');
+const cases = [...source.matchAll(/^\s+it\('([^']+)'/gmu)].map(match => match[1]);
+if (cases.length === 0) throw new Error(`${file} contains no statically named tests.`);
+if (new Set(cases).size !== cases.length) throw new Error(`${file} contains duplicate test names.`);
 const vitest = resolve('node_modules/vitest/vitest.mjs');
 
 for (const name of cases) {

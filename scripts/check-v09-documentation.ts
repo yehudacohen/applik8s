@@ -104,6 +104,12 @@ const substantivePages: Readonly<Record<string, {
   'docs-site/src/content/docs/build-applications/operations-and-effects.mdx': { minimumLines: 80, minimumTypeScriptExamples: 2, minimumSections: 3 },
   'docs-site/src/content/docs/events-reactive-systems.mdx': { minimumLines: 75, minimumTypeScriptExamples: 4, minimumSections: 4 },
   'docs-site/src/content/docs/ai-agents.mdx': { minimumLines: 65, minimumTypeScriptExamples: 1, minimumSections: 4 },
+  'docs-site/src/content/docs/security.mdx': { minimumLines: 65, minimumTypeScriptExamples: 2, minimumSections: 5 },
+  'docs-site/src/content/docs/infrastructure-providers.mdx': { minimumLines: 65, minimumTypeScriptExamples: 1, minimumSections: 5 },
+  'docs-site/src/content/docs/infrastructure-providers/provider-guarantees.mdx': { minimumLines: 65, minimumTypeScriptExamples: 0, minimumSections: 5 },
+  'docs-site/src/content/docs/examples-starts.mdx': { minimumLines: 65, minimumTypeScriptExamples: 0, minimumSections: 4 },
+  'docs-site/src/content/docs/reference/public-contracts.mdx': { minimumLines: 50, minimumTypeScriptExamples: 0, minimumSections: 3 },
+  'docs-site/src/content/docs/understand/troubleshooting.mdx': { minimumLines: 65, minimumTypeScriptExamples: 0, minimumSections: 8 },
 };
 
 const findings: string[] = [];
@@ -124,7 +130,7 @@ for (const [path, required] of Object.entries(requiredPages)) {
   if (substance) {
     const lineCount = source.split(/\r?\n/u).length;
     const exampleCount = source.match(/```ts\b/gu)?.length ?? 0;
-    const sectionCount = source.match(/^## /gmu)?.length ?? 0;
+    const sectionCount = source.match(/^##(?:#)? /gmu)?.length ?? 0;
     if (lineCount < substance.minimumLines) {
       findings.push(`V09_DOCUMENTATION_TOO_SHALLOW: ${path} has ${lineCount} lines; expected at least ${substance.minimumLines}.`);
     }

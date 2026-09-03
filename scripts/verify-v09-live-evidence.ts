@@ -11,6 +11,7 @@ import type {
 } from './v06-evidence.js';
 import { validateV09ReleaseReceipt } from './check-v09-live-evidence.js';
 import {
+  v09EvidenceEnvironment,
   v09ReleaseEvidenceContract,
   v09ReleaseEvidenceSuites,
 } from './v09-release-evidence-contract.js';
@@ -75,7 +76,7 @@ export function validateV09AggregateEvidence(
     findings.push('suite receipts must identify the exact clean release commit.');
   }
   const cluster = evidence.receipts.find(receipt =>
-    receipt.suite !== 'postgres' && receipt.suite !== 'clickhouse'
+    v09EvidenceEnvironment(receipt.suite) === 'kubernetes'
   )?.candidate.cluster;
   for (const suite of v09ReleaseEvidenceSuites) {
     const receipt = evidence.receipts.find(candidate => candidate.suite === suite);
@@ -84,9 +85,9 @@ export function validateV09AggregateEvidence(
       suite,
       requiredAssertions: v09ReleaseEvidenceContract[suite] ?? [],
       expectedGit: candidateGit ?? missingGit,
-      expectedCluster: suite === 'postgres' || suite === 'clickhouse'
-        ? undefined
-        : cluster ?? missingCluster,
+      expectedCluster: v09EvidenceEnvironment(suite) === 'kubernetes'
+        ? cluster ?? missingCluster
+        : undefined,
       now,
       path: `aggregate:${suite}`,
     }));
@@ -110,7 +111,10 @@ async function downloadGitHubEvidence(commit: string): Promise<AggregateEvidence
   }
   const artifactName = `applik8s-v0.9-live-${commit}`;
   const listing = await github(`/repos/${repository}/actions/artifacts?name=${encodeURIComponent(artifactName)}&per_page=100`, token);
-  const artifact = listing.artifacts?.find((candidate: Record<string, unknown>) =>
+  const artifacts = Array.isArray(listing.artifacts)
+    ? listing.artifacts.map(objectValue).filter(candidate => candidate !== undefined)
+    : [];
+  const artifact = artifacts.find(candidate =>
     candidate.name === artifactName
     && candidate.expired !== true
     && objectValue(candidate.workflow_run)?.head_sha === commit
@@ -143,7 +147,7 @@ async function downloadGitHubEvidence(commit: string): Promise<AggregateEvidence
   }
 }
 
-async function github(path: string, token: string): Promise<Record<string, any>> {
+async function github(path: string, token: string): Promise<Record<string, unknown>> {
   const response = await fetch(`https://api.github.com${path}`, {
     headers: {
       Accept: 'application/vnd.github+json',
@@ -152,12 +156,12 @@ async function github(path: string, token: string): Promise<Record<string, any>>
     },
   });
   if (!response.ok) throw new Error(`GitHub API ${path} failed with HTTP ${response.status}.`);
-  return await response.json() as Record<string, any>;
+  return await response.json() as Record<string, unknown>;
 }
 
-function objectValue(value: unknown): Record<string, any> | undefined {
+function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, any>
+    ? value as Record<string, unknown>
     : undefined;
 }
 
@@ -177,16 +181,42 @@ function selfTest(): void {
   const receipts = v09ReleaseEvidenceSuites.map((suite, index) => {
     const completedAt = new Date(now - 60_000).toISOString();
     const assertions = v09ReleaseEvidenceContract[suite] ?? [];
-    return {
+    const environmentKind = v09EvidenceEnvironment(suite);
+    const receipt = {
       schemaVersion: 3,
       suite,
       run: { id: `run-${index}`, startedAt: new Date(now - 120_000).toISOString(), completedAt },
       completedAt,
-      candidate: { git, ...(suite === 'postgres' || suite === 'clickhouse' ? {} : { cluster }) },
-      environment: {},
+      candidate: {
+        git,
+        ...(environmentKind === 'kubernetes' ? { cluster } : {}),
+      },
+      environment: environmentKind === 'aws'
+        ? {
+            kind: environmentKind,
+            accountId: '123456789012',
+            region: 'us-east-1',
+            maxEstimatedCostUsd: 0.01,
+            expiresAt: new Date(now + 60_000).toISOString(),
+          }
+        : { kind: environmentKind },
       assertions,
       assertionEvidence: assertions.map(assertion => ({ assertion, test: `fixture ${assertion}`, runId: `run-${index}`, observedAt: completedAt })),
-    } satisfies V06EvidenceReceipt;
+      ...(suite === 'aws-core-smoke'
+        ? {
+            teardown: { complete: true, authority: 'createApplicationAwsDeployment.destroy' },
+            inventory: [
+              { type: 'AWS.Kinesis.Stream' },
+              { type: 'AWS.S3.Bucket' },
+              { type: 'AWS.SQS.Queue' },
+            ],
+          }
+        : {}),
+      ...(suite === 'v09-clean-context-review'
+        ? { review: { context: 'fresh', conversationHistory: 'none', findings: [] } }
+        : {}),
+    };
+    return receipt as V06EvidenceReceipt;
   });
   const evidence: AggregateEvidence = {
     schemaVersion: 1,
@@ -199,6 +229,21 @@ function selfTest(): void {
   if (validateV09AggregateEvidence(evidence, commit, now).length > 0) throw new Error('valid v0.9 evidence fixture was rejected.');
   if (validateV09AggregateEvidence({ ...evidence, commit: 'c'.repeat(40) }, commit, now).length === 0) {
     throw new Error('mismatched v0.9 evidence commit was accepted.');
+  }
+  const localSuite = v09ReleaseEvidenceSuites.find(suite => v09EvidenceEnvironment(suite) === 'local');
+  if (!localSuite) throw new Error('v0.9 evidence contract has no local self-test suite.');
+  const localReceipt = receipts.find(receipt => receipt.suite === localSuite);
+  if (!localReceipt) throw new Error('v0.9 evidence self-test could not find its local receipt.');
+  const incorrectLocalCluster = {
+    ...localReceipt,
+    candidate: { ...localReceipt.candidate, cluster },
+  };
+  const localClusterEvidence = {
+    ...evidence,
+    receipts: receipts.map(receipt => receipt.suite === localSuite ? incorrectLocalCluster : receipt),
+  };
+  if (validateV09AggregateEvidence(localClusterEvidence, commit, now).length > 0) {
+    throw new Error('irrelevant local-suite cluster metadata changed aggregate validation.');
   }
   console.log('v0.9 aggregate live-evidence verifier self-test passed.');
 }

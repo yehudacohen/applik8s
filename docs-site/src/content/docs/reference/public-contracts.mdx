@@ -18,3 +18,37 @@ is still required before it becomes the frozen 1.0 candidate.
 Package maturity is a compatibility disposition, not invented provider evidence. Inventory membership
 does not upgrade provider maturity or evidence. A beta provider remains beta, and a stable-candidate
 provider still cannot pass a release gate until its required lifecycle and conformance evidence exists.
+
+## What is actually stable
+
+The package count is not the stability boundary. Every package and entrypoint has an explicit disposition, and
+the umbrella root has a narrower symbol override. The reviewed root common path includes `app`, models, events,
+workflows, provider tokens, configuration references, and graph discovery. Specialist runtime and compiler
+exports remain experimental even when they are physically re-exported for pre-1.0 integration work.
+
+Use focused packages and subpaths when implementing tooling or providers. Ordinary application source should
+prefer the documented root authoring surface. No `./internal/*` export is supported.
+
+## Compatibility vocabulary
+
+- **stable-1.0-candidate**: reviewed for intended 1.0 compatibility, still subject to the published pre-1.0 policy.
+- **beta**: implemented and useful, but missing a complete provider/evidence matrix or final compatibility review.
+- **preview**: deliberately exposed for real use and feedback without a stability promise.
+- **experimental**: an integration seam or incomplete surface that can change before 1.0.
+
+Maturity and evidence are independent. A stable-candidate schema does not make an unqualified provider stable;
+a strong live test does not freeze every helper exported from its package.
+
+## Reviewing a change
+
+Before changing a public symbol, diagnostic, command, option, environment input, artifact schema, or generated
+source contract:
+
+1. Regenerate the inventory with `bun run check:v09:public-contracts`.
+2. Classify the change against the owning disposition and compatibility set.
+3. Add migration or replacement policy when persisted state or generated source is affected.
+4. Update the canonical documentation and evidence named by the contract.
+5. Freeze the candidate only after the exact-candidate receipts and clean-context review pass.
+
+The release checker rejects a release while the inventory remains `candidate-review-ready`. Maintainer review
+changes it to `frozen`; file existence or package compilation cannot make that decision automatically.

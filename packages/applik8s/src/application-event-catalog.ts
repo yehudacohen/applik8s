@@ -246,16 +246,19 @@ export function applicationCatalogSourceOptions<TPayload extends object>(
   return {
     database: source.database,
     retention: { maxAgeSeconds: 30 * 24 * 60 * 60, maxMessages: 10_000_000 },
-    partitionBy: (payload) => applicationCatalogPartition(payload),
+    // Keep the complete default partition policy inside the serialized
+    // callback. Generated applications consume this callback across a
+    // package boundary, where a module-local helper is intentionally not an
+    // application-owned closure dependency and cannot be reconstructed by
+    // entrypoint discovery.
+    partitionBy: (payload) => {
+      for (const key of ['identity', 'id', 'key']) {
+        const value = Reflect.get(payload, key);
+        if (typeof value === 'string' && value.trim()) return value;
+        if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+      }
+      return 'application';
+    },
     authorize: () => false,
   };
-}
-
-function applicationCatalogPartition(payload: object): string {
-  for (const key of ['identity', 'id', 'key']) {
-    const value = Reflect.get(payload, key);
-    if (typeof value === 'string' && value.trim()) return value;
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  }
-  return 'application';
 }

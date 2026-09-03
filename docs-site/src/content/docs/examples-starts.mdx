@@ -12,3 +12,62 @@ description: Learn from three maintained applications with increasingly demandin
 
 Each example is executable against its documented version and links evidence rather than claiming provider
 maturity from prose.
+
+## Start with GuestBook
+
+Use GuestBook when learning the authoring model. Its domain stays intentionally small so the important seams are
+visible: a CRD-backed model, `Resource.on.reconcile`, one typed create operation, a query with live invalidation,
+and an application host deployed in the same graph.
+
+```sh
+bun run --cwd examples/guestbook-start build
+bun run --cwd examples/guestbook-start deploy:local
+```
+
+Read `examples/guestbook-start/src/application.ts` first, then follow the model into its route and source-owned
+journey. The example is not intended to demonstrate every provider.
+
+## Use Chirp to understand composition
+
+Chirp is a small product with deliberately non-small architecture. It shows how one application composes
+PostgreSQL-authoritative models, JetStream events, Valkey projections, ClickHouse analytics, object storage,
+durable workflows, identity, moderation, and a browser application while keeping provider details out of domain
+handlers.
+
+```sh
+bun run check:v06:chirp-build
+bun run test:v09:chirp-kubernetes
+```
+
+The first command is a local compile and graph assertion. The second is a destructive, self-contained OrbStack
+qualification: it requires the documented shared development platform, deploys twice, runs the functional data
+plane, and destroys through the graph owner. Use the AWS gate only in the dedicated bounded test account and only
+after reviewing its exact inventory and cost scope.
+
+## Generate Agentic Start
+
+Agentic Start is a product foundation rather than a single-page demo. The generated application owns its
+documents, inbox/reviews, conversations, knowledge, agents, evaluations, integrations, tenant administration,
+billing configuration, and presentation. Reusable mechanics stay in focused packages; product vocabulary and
+policy stay in generated source so the application can be changed without forking the framework.
+
+```sh
+bun create applik8s
+```
+
+Choose Agentic Start in the prompt, configure its public profile and secret references, then use the generated
+doctor and development commands. The release browser gate creates a fresh generated consumer, builds it, deploys
+the graph, exercises its source-owned journeys in multiple browser contexts, captures visual evidence, proves a
+no-op redeploy, and destroys it.
+
+## Pick the right fixture
+
+| Goal | Use |
+| --- | --- |
+| Learn models, reconciliation, and live UI | GuestBook |
+| Inspect distributed composition and portability | Chirp |
+| Begin an agentic SaaS product | Agentic Start |
+| Validate a provider implementation | The provider conformance suite, not an example |
+
+Examples are maintained acceptance applications, but they do not broaden a provider's stated maturity. A clean
+GuestBook run cannot qualify AWS, and a deterministic Agentic Start profile cannot qualify OpenRouter or Stripe.

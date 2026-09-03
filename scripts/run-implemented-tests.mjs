@@ -32,6 +32,7 @@ for (let shard = startShard; shard <= shards; shard += 1) {
     '--exclude=packages/compiler/test/application-workflows.vertical.test.ts',
     '--exclude=packages/compiler/test/compiler-artifacts.vertical.test.ts',
     '--exclude=packages/compiler/test/application-reactive.vertical.test.ts',
+    '--exclude=packages/vite/test/vite.vertical.test.ts',
     '--passWithNoTests',
   ]);
   if (code !== 0) process.exit(code);
@@ -46,6 +47,11 @@ const reactiveCompilerCode = await run(process.execPath, [
   resolve('scripts/run-reactive-compiler-tests.mjs'),
 ]);
 if (reactiveCompilerCode !== 0) process.exit(reactiveCompilerCode);
+
+const viteIntegrationCode = await run(process.execPath, [
+  resolve('scripts/run-vite-integration-tests.mjs'),
+]);
+if (viteIntegrationCode !== 0) process.exit(viteIntegrationCode);
 
 const workflowCompilerCode = await run(process.execPath, [
   resolve('scripts/run-workflow-compiler-tests.mjs'),

@@ -7,3 +7,71 @@ Clients provide application input, never trusted actor identity. Admission deriv
 lineage, authority catalog version, and receipt. Provider-private dependencies do not grant application
 callbacks access to their credentials. `secret.env(...)` and Secret references preserve provenance in plans
 without reading or serializing values during graph construction.
+
+## Trust begins at admission
+
+A browser, webhook, or queue message may claim an identifier, role, or workspace, but that claim is not an
+identity. The server adapter authenticates the request and constructs the trusted execution context. Commands,
+queries, workflow starts, signal actions, and object intents are then authorized against that context and the
+versioned authority catalog.
+
+This distinction matters in application code. An approval input can contain a comment; it must not contain an
+`approvedBy` field that the workflow trusts. The signal runtime records the admitted principal and authorization
+receipt as framework metadata. The same rule applies to agent tools and durable effects: application payload is
+untrusted input, while actor and causal identity come from the execution boundary.
+
+## Declare authority close to the operation
+
+Roles grant typed operations rather than URL patterns. A signal contract, model operation, query, or provider
+operation contributes an authority handle, and the compiler derives the smallest caller identity required by a
+managed closure.
+
+```ts
+const Reviewers = application.role('reviewer');
+
+Reviewers.can(
+  ReviewRequest.read,
+  ReviewRequest.approve,
+  ReviewRequest.reject,
+);
+```
+
+The generated worker does not receive an unrestricted application credential. It receives admission scoped to
+the exact operations discovered in its closure. A missing, ambiguous, or undeclared operation fails compilation
+or admission instead of widening authority.
+
+## Keep secret values out of the graph
+
+Use configuration references in authored source:
+
+```ts
+const providerKey = secret.env('PROVIDER_API_KEY', {
+  contract: { version: 'v1', keys: { token: 'token' } },
+});
+const endpoint = config.env.url('PROVIDER_ENDPOINT');
+```
+
+The implementation plan records the variable name, requiredness, expected key contract, and public provenance.
+The selected deployment provider resolves the value only at its authorized boundary and projects it only into
+the workload that needs it. Do not call `process.env` from graph construction, print resolved values, or place
+plaintext credentials in application specifications.
+
+## Causal identity survives durable work
+
+Execution identity answers “which worker is running this code?” Causal identity answers “which admitted human or
+external principal caused this work?” Workflows, tasks, processors, agents, and reconcilers preserve both. Nested
+execution may change the immediate service principal without replacing the original causal lineage.
+
+Use causal identity for ownership and audit attribution. Use the current execution principal for worker-level
+authorization. Receipts preserve the decision inputs and authority revision needed to explain a result later.
+
+## Failure behavior
+
+- Authentication uncertainty rejects admission; it never becomes an anonymous success.
+- A stale authority version requires fresh admission rather than silently reusing old roles.
+- Missing Secret material leaves the dependent provider unready and names the public reference, not its value.
+- A revoked or expired capability cannot be reconstructed from a previously serialized client handle.
+- Logs, status, journeys, and release receipts must redact credentials and bearer material.
+
+See **Operations and effects** for durable effect receipts and **Profiles and providers** for configuration
+provenance. Provider-specific threat boundaries remain subordinate to these application-wide rules.

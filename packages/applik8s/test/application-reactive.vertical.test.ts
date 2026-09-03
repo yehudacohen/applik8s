@@ -35,6 +35,16 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       (node) => node.kind === 'stream' && node.name === 'models.Record.created',
     );
     expect(lifecycleStreams).toHaveLength(1);
+    const catalogStream = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'stream' && node.catalog?.selection === 'from',
+    );
+    expect(catalogStream).toMatchObject({
+      kind: 'stream',
+      partitioning: 'declared',
+    });
+    if (catalogStream?.kind !== 'stream') throw new Error('Expected the model event-catalog stream.');
+    expect(catalogStream.partitionUnresolved).toBeUndefined();
+    expect(catalogStream.partitionSource).not.toContain('applicationCatalogPartition');
     expect(applicationGraphFor(application.composition)?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'streamProcessor',

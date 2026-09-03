@@ -10,5 +10,58 @@ description: Read evidence-backed capability support before selecting an impleme
 | Object storage | local/S3 protocol | Rook/Ceph S3, qualified | S3, resource-scoped lifecycle |
 | Finite jobs | local process | Kubernetes Job, qualified | ECS one-shot task, beta evidence |
 
+## How to read this table
+
+“Qualified” means the maintained provider has passed its declared conformance and environment lifecycle gate for
+this candidate. “Beta evidence” means the contract is useful but its provider matrix or live evidence is not yet
+complete. “Qualification required by profile” means the implementation exists but the complete product profile
+cannot inherit maturity from unit tests or from another environment.
+
+The following guarantees are evaluated separately:
+
+| Guarantee | Question the evidence must answer |
+| --- | --- |
+| Semantics | Does the provider preserve the capability's ordering, idempotency, and error contract? |
+| Readiness | Is observed current-generation state used, rather than desired input or a stale condition? |
+| Recovery | Can an interrupted operation reattach or converge without duplicate side effects? |
+| Update | Is a controlled change applied without reporting a stale deployment as ready? |
+| Drift | Can owned drift be repaired without replacing or deleting unrelated resources? |
+| Deletion | Does the lifecycle owner delete dependents first and verify exact absence? |
+| Retention | Are retained data and shared infrastructure explicitly separated from instance ownership? |
+| Authority | Does the runtime receive only the operations, credentials, and network access it needs? |
+
+## Capability notes
+
+### Transactional database
+
+PostgreSQL is the canonical relational and command authority for the maintained local and Kubernetes profiles.
+Its qualification covers transaction-scoped idempotency, authoritative revisions, outboxes, managed-model
+recovery, and query-batch frontiers. An AWS profile selecting Aurora PostgreSQL still needs its own complete
+profile qualification; protocol compatibility alone does not prove deployment or recovery behavior.
+
+### Event log
+
+JetStream is the maintained Kubernetes event-log implementation. Local deterministic stores are suitable for
+tests but do not claim broker durability. Kinesis is a beta AWS implementation until the complete unchanged-source
+Chirp AWS profile proves functional delivery, no-op deployment, update, destroy, and exact absence.
+
+### Object storage
+
+S3 protocol compatibility does not imply lifecycle equivalence. Rook/Ceph storage depends on an independently
+owned storage platform and explicit bucket retention. Native AWS S3 uses resource-scoped Alchemy lifecycle and
+requires destructive access to be explicitly enabled for application-owned test or deployment resources.
+
+### Finite jobs
+
+Kubernetes Jobs qualify authored `application.job(...)` through compilation, deployment, progress, worker
+interruption, reattachment, cancellation, and owned cleanup. The local process provider supports development and
+conformance. The ECS one-shot provider remains beta until equivalent live recovery and lifecycle evidence exists.
+
+## Selecting a provider
+
+Choose the smallest implementation whose guarantees satisfy the product. Do not select a provider solely because
+it shares a protocol or can be reached from the runtime. If a required guarantee is absent, the implementation
+plan should reject the profile or record the explicit beta boundary before deployment.
+
 This page summarizes the generated provider catalog; it does not upgrade maturity. Consult the referenced
 plan/evidence for creation, update, drift, replacement, deletion, retained data, and recovery claims.

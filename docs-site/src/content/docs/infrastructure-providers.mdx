@@ -7,3 +7,64 @@ TypeKro authors Kubernetes resources and Alchemy deploys them. Native Alchemy re
 managed infrastructure. External bindings contribute no infrastructure and declare the lifecycle operated
 outside Applik8s. Application tutorials use capability constructors; provider authors document readiness,
 upgrade, deletion, retained data, authority, and evidence explicitly.
+
+## From capability to physical resources
+
+Application source selects semantic capabilities such as `TransactionalDatabase`, `EventLog`, `ObjectStorage`,
+or `WorkflowEngine`. A profile binds each capability to an implementation. The compiler resolves private
+implementation dependencies and produces one canonical implementation plan before any provider mutates state.
+
+```ts
+const database = Database.postgres({ storage: { size: '50Gi' } });
+
+application.profile('production', profile => {
+  profile.provide(TransactionalDatabase, database);
+  profile.provide(Search, Search.postgres({ database }));
+});
+```
+
+Sharing the same implementation value means sharing one physical implementation node. Search can use the
+database as a private provider dependency without granting database access to every application callback.
+
+## Deployment ownership
+
+On Kubernetes, TypeKro turns the resolved application deployment graph into ordered Kubernetes resources and
+owns readiness, updates, and dependent-first deletion. Alchemy is the deployment-state and transaction layer;
+it must not duplicate TypeKro-owned Kubernetes lifecycle logic. On AWS, the deployment graph uses native Alchemy
+AWS resources directly. It does not emit intermediary CloudFormation templates.
+
+Every physical resource has one lifecycle owner. Retained data, external namespaces, shared operators, and
+singleton control planes are explicit ownership exceptions—not objects silently omitted from teardown.
+
+## External implementations
+
+An external binding supplies typed coordinates, credential references, guarantees, and an implementation
+identity. It creates no infrastructure and must declare that lifecycle is externally operated. This lets the
+same domain code use a managed local provider, a Kubernetes provider, or an existing service without pretending
+their operational guarantees are identical.
+
+Use an external implementation when another team owns upgrades or deletion. Use a maintained managed
+implementation when Applik8s should own the complete lifecycle. Do not wrap an unknown endpoint and label it as
+a qualified provider: readiness, migration, recovery, and authority still need evidence.
+
+## Review the plan before mutation
+
+`applik8s plan` and `applik8s explain` expose implementation identity, provider dependencies, configuration
+provenance, readiness, ownership, and migration diagnostics. A missing guarantee or ambiguous implementation
+fails before mutation. Once reviewed, deployment and destroy must use the same application/Alchemy/TypeKro
+owner so persisted state and topological deletion remain intact.
+
+## Provider author checklist
+
+A maintained provider documents and tests:
+
+- configuration and versioned Secret contracts;
+- create, readiness, no-op, update, drift, replacement, and deletion behavior;
+- shared, external, and retained-resource ownership;
+- retry, cancellation, timeout, and unknown-outcome behavior;
+- migrations and supported version skew;
+- least-privilege runtime access and redacted diagnostics;
+- local conformance plus any environment-specific live qualification it claims.
+
+The next page compares the guarantees currently supported by maintained profiles. A table entry is a navigation
+aid, not a substitute for its test and receipt.
