@@ -9,7 +9,11 @@ import {
   withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import { describe, expect, it, vi } from 'vitest';
-import { createApplicationInternalOperationHandler } from '../src/internal-handler.js';
+import {
+  type ApplicationInternalOperationBinding,
+  type ApplicationInternalOperationHandlerOptions,
+  createApplicationInternalOperationHandler,
+} from '../src/internal-handler.js';
 import {
   applicationInternalOperationInputDigest,
   encodeApplicationInternalOperationInvocation,
@@ -18,11 +22,13 @@ import {
 const secret = 'internal-handler-secret-at-least-32-bytes';
 const now = new Date('2026-07-30T00:00:00.000Z');
 const operation = descriptor();
+type Revalidate = ApplicationInternalOperationHandlerOptions['revalidate'];
+type Invoke = ApplicationInternalOperationBinding['invoke'];
 
 describe('internal operation placement handler', () => {
   it('verifies, revalidates, and invokes the existing operation binding', async () => {
-    const revalidate = vi.fn(async () => true);
-    const invoke = vi.fn(async (input: JsonValue) => ({
+    const revalidate = vi.fn<Revalidate>(async () => true);
+    const invoke = vi.fn<Invoke>(async (input: JsonValue) => ({
       echoed: input,
     }));
     const handle = createApplicationInternalOperationHandler({
@@ -55,8 +61,8 @@ describe('internal operation placement handler', () => {
   });
 
   it('rejects public credential passthrough before placement invocation', async () => {
-    const revalidate = vi.fn();
-    const invoke = vi.fn();
+    const revalidate = vi.fn<Revalidate>();
+    const invoke = vi.fn<Invoke>();
     const handle = handler(revalidate, invoke);
     const withCredential = request({}, {
       authorization: 'Bearer inbound-oauth-token',
@@ -72,19 +78,19 @@ describe('internal operation placement handler', () => {
   });
 
   it('rejects input tampering and stale authority without invoking', async () => {
-    const invoke = vi.fn();
+    const invoke = vi.fn<Invoke>();
     const validInput = { query: 'evidence' };
     const tampered = request(
       { query: 'different' },
       {},
       invocationToken(validInput),
     );
-    const tamperedResponse = await handler(vi.fn(async () => true), invoke)(
+    const tamperedResponse = await handler(vi.fn<Revalidate>(async () => true), invoke)(
       tampered,
     );
     expect(tamperedResponse?.status).toBe(400);
 
-    const staleResponse = await handler(vi.fn(async () => false), invoke)(
+    const staleResponse = await handler(vi.fn<Revalidate>(async () => false), invoke)(
       request(validInput),
     );
     expect(staleResponse?.status).toBe(403);
@@ -95,14 +101,14 @@ describe('internal operation placement handler', () => {
   });
 
   it('does not claim unrelated routes', async () => {
-    const handle = handler(vi.fn(async () => true), vi.fn());
+    const handle = handler(vi.fn<Revalidate>(async () => true), vi.fn<Invoke>());
     await expect(
       handle(new Request('https://internal.example.test/healthz')),
     ).resolves.toBeUndefined();
   });
 });
 
-function handler(revalidate: ReturnType<typeof vi.fn>, invoke: ReturnType<typeof vi.fn>) {
+function handler(revalidate: Revalidate, invoke: Invoke) {
   return createApplicationInternalOperationHandler({
     secret,
     bindings: [{

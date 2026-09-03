@@ -46,6 +46,28 @@ const requiredPages = {
     'Models, queries, and views',
     '`Entry.create(...)`',
     'bounded one-time query',
+    'Views are persistent application read contracts',
+  ],
+  'docs-site/src/content/docs/build-applications/managed-models-and-reconciliation.mdx': [
+    'Model.on.reconcile',
+    'ManagedModelStore.kubernetes',
+    'at least once',
+  ],
+  'docs-site/src/content/docs/build-applications/batch-and-stream-processing.mdx': [
+    'Query.onBatch',
+    'Stream.onBatch',
+    'monotonic frontier',
+  ],
+  'docs-site/src/content/docs/build-applications/jobs-workflows-sagas.mdx': [
+    'application.job',
+    'application.workflow',
+    'application.transaction.saga',
+    'unknown outcome',
+  ],
+  'docs-site/src/content/docs/build-applications/ml-models.mdx': [
+    'ML.model',
+    'artifact digest',
+    "partialFailure: 'collect'",
   ],
   'docs-site/src/content/docs/events-reactive-systems.mdx': ['Events and reactive systems', 'output.upsert'],
   'docs-site/src/content/docs/distributed-behavior.mdx': ['Jobs, workflows, Sagas, and actors', 'Schedules select an execution family'],
@@ -68,6 +90,22 @@ const requiredPages = {
   ],
 } as const;
 
+const substantivePages: Readonly<Record<string, {
+  readonly minimumLines: number;
+  readonly minimumTypeScriptExamples: number;
+  readonly minimumSections: number;
+}>> = {
+  'docs-site/src/content/docs/build-applications/decision-guide.mdx': { minimumLines: 50, minimumTypeScriptExamples: 0, minimumSections: 3 },
+  'docs-site/src/content/docs/build-applications/models-queries-views.mdx': { minimumLines: 70, minimumTypeScriptExamples: 3, minimumSections: 4 },
+  'docs-site/src/content/docs/build-applications/managed-models-and-reconciliation.mdx': { minimumLines: 75, minimumTypeScriptExamples: 2, minimumSections: 4 },
+  'docs-site/src/content/docs/build-applications/batch-and-stream-processing.mdx': { minimumLines: 85, minimumTypeScriptExamples: 2, minimumSections: 4 },
+  'docs-site/src/content/docs/build-applications/jobs-workflows-sagas.mdx': { minimumLines: 100, minimumTypeScriptExamples: 3, minimumSections: 4 },
+  'docs-site/src/content/docs/build-applications/ml-models.mdx': { minimumLines: 70, minimumTypeScriptExamples: 2, minimumSections: 4 },
+  'docs-site/src/content/docs/build-applications/operations-and-effects.mdx': { minimumLines: 80, minimumTypeScriptExamples: 2, minimumSections: 3 },
+  'docs-site/src/content/docs/events-reactive-systems.mdx': { minimumLines: 75, minimumTypeScriptExamples: 4, minimumSections: 4 },
+  'docs-site/src/content/docs/ai-agents.mdx': { minimumLines: 65, minimumTypeScriptExamples: 1, minimumSections: 4 },
+};
+
 const findings: string[] = [];
 for (const [path, required] of Object.entries(requiredPages)) {
   let source: string;
@@ -82,6 +120,21 @@ for (const [path, required] of Object.entries(requiredPages)) {
       findings.push(`V09_DOCUMENTATION_CONTRACT_MISSING: ${path} must contain ${JSON.stringify(expected)}.`);
     }
   }
+  const substance = substantivePages[path];
+  if (substance) {
+    const lineCount = source.split(/\r?\n/u).length;
+    const exampleCount = source.match(/```ts\b/gu)?.length ?? 0;
+    const sectionCount = source.match(/^## /gmu)?.length ?? 0;
+    if (lineCount < substance.minimumLines) {
+      findings.push(`V09_DOCUMENTATION_TOO_SHALLOW: ${path} has ${lineCount} lines; expected at least ${substance.minimumLines}.`);
+    }
+    if (exampleCount < substance.minimumTypeScriptExamples) {
+      findings.push(`V09_DOCUMENTATION_EXAMPLES_MISSING: ${path} has ${exampleCount} TypeScript examples; expected at least ${substance.minimumTypeScriptExamples}.`);
+    }
+    if (sectionCount < substance.minimumSections) {
+      findings.push(`V09_DOCUMENTATION_SECTIONS_MISSING: ${path} has ${sectionCount} sections; expected at least ${substance.minimumSections}.`);
+    }
+  }
 }
 
 const config = await readFile('docs-site/astro.config.ts', 'utf8');
@@ -92,6 +145,10 @@ for (const expected of [
   "slug: 'build-applications/profiles-and-providers'",
   "slug: 'upgrade/v071-to-v09'",
   "slug: 'build-applications/decision-guide'",
+  "slug: 'build-applications/managed-models-and-reconciliation'",
+  "slug: 'build-applications/batch-and-stream-processing'",
+  "slug: 'build-applications/jobs-workflows-sagas'",
+  "slug: 'build-applications/ml-models'",
   "slug: 'distributed-behavior'",
   "slug: 'infrastructure-providers/provider-guarantees'",
 ]) {

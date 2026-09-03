@@ -10,7 +10,7 @@ import {
 import {
   ApplicationProviderRuntimeSelectionError,
   resolveApplicationProviderRuntimeImplementation,
-} from '@applik8s/applik8s/internal/provider-runtime';
+} from '@applik8s/applik8s/provider-extension-runtime';
 import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 import { applicationCallableProviderDependencies } from '../src/application-provider-dependencies';

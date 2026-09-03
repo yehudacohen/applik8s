@@ -11,7 +11,7 @@ import {
   bindApplicationCallableDependencies,
   bindApplicationProviderDependencies,
   bindApplicationProviderOperation,
-} from '@applik8s/applik8s/internal/provider-runtime';
+} from '@applik8s/applik8s/provider-extension-runtime';
 import { type ApplicationCommandNode, type JsonSchemaSource, type JsonValue, serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
 import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';

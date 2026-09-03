@@ -8,7 +8,7 @@ import {
   workflow,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
+import { bindApplicationCallableDependencies } from '@applik8s/applik8s/provider-extension-runtime';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 

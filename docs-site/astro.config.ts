@@ -29,6 +29,10 @@ export default defineConfig({
           items: [
             { label: 'Choose a primitive', slug: 'build-applications/decision-guide' },
             { label: 'Models, queries, and views', slug: 'build-applications/models-queries-views' },
+            { label: 'Managed models and reconciliation', slug: 'build-applications/managed-models-and-reconciliation' },
+            { label: 'Batch and stream processing', slug: 'build-applications/batch-and-stream-processing' },
+            { label: 'Jobs, workflows, and Sagas', slug: 'build-applications/jobs-workflows-sagas' },
+            { label: 'Typed ML models', slug: 'build-applications/ml-models' },
             { label: 'Profiles and providers', slug: 'build-applications/profiles-and-providers' },
             { label: 'Operations and effect safety', slug: 'build-applications/operations-and-effects' },
           ],

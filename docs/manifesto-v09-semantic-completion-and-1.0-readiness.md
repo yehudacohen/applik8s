@@ -11,9 +11,11 @@ maintainers, and external TypeScript developers evaluating the 1.0 candidate.
 
 **Target:** Applik8s v0.9.0
 
-**Depends on:** An exact, machine-recorded released Applik8s v0.8.x baseline and its canonical application graph, `ApplicationPlan`,
-provider profiles and concrete provider bindings, inferred runtime access, OpenTelemetry semantics, durable workflows,
-actors, provider maturity contracts, Agentic Start, and independent development environment.
+**Depends on:** The exact, machine-recorded released Applik8s v0.7.1 baseline plus the unreleased v0.8 engineering
+line that introduced the canonical application graph, `ApplicationPlan`, provider profiles and concrete provider
+bindings, inferred runtime access, OpenTelemetry semantics, durable workflows, actors, provider maturity contracts,
+Agentic Start, and the independent development environment. v0.8 was not published; its work is incorporated into
+v0.9 rather than presented as a released compatibility baseline.
 
 **Unblocks:** `1.0.0-rc.1`
 
@@ -21,7 +23,7 @@ actors, provider maturity contracts, Agentic Start, and independent development 
 
 ## Thesis
 
-Applik8s v0.8 should prove that one TypeScript application can describe a serious distributed system and
+The v0.8 engineering program set out to prove that one TypeScript application can describe a serious distributed system and
 that the framework can explain, secure, run, observe, and evolve that application without splitting its
 semantics across unrelated programming and infrastructure models.
 
@@ -76,9 +78,9 @@ The release removes the next sixteen forms of friction:
 14. **Profiles and deployment targets compete for assembly authority.** Typed provider bindings already
     contain the implementation, credentials, account, cluster, lifecycle, runtime, and infrastructure
     decision. Target, placement, substrate, and installation abstractions duplicate that authority.
-15. **Simplifying assembly can orphan active deployment state.** Released v0.8 plans and Alchemy/TypeKro
-    state need one exact, resumable identity and lifecycle-authority migration rather than a source-only
-    rename or best-effort adoption.
+15. **Simplifying assembly can orphan active deployment state.** Released v0.7.1 Alchemy/TypeKro state—and
+    development state produced by the unreleased v0.8 engineering line—need one exact, resumable identity and
+    lifecycle-authority migration rather than a source-only rename or best-effort adoption.
 16. **Effect safety is repeated and overclaimed across execution families.** Jobs, workflows, processors,
     reconcilers, commands, agents, and Sagas need one receipt/fencing/unknown-outcome contract without
     exposing effect plumbing in ordinary application handlers.
@@ -138,7 +140,7 @@ The semantic-completeness pass distinguishes what must block 1.0 from what may r
 - external capability bindings;
 - Kubernetes-cluster dependency injection;
 - profiles and concrete provider bindings without target/placement/substrate duplication;
-- deterministic implementation identity and a resumable v0.8 deployment-state migration protocol;
+- deterministic implementation identity and a resumable v0.7.1 deployment-state migration protocol;
 - one shared receipt/fencing/unknown-outcome contract for stable effectful execution surfaces;
 - production-qualified `researchAgent()` composition and provider-neutral `WebSearch`,
   `SourceRetriever`, and `ResearchEvidence` contracts;
@@ -195,7 +197,7 @@ journeys, and the decision boundary for `1.0.0-rc.1`.
 | External capability bindings | runtime adapter, optional deployment contributor, readiness, lifecycle, Secret/config provenance, migration | a general plugin platform, provider catalog expansion, implicit ownership |
 | Kubernetes cluster capability | named cluster DI, existing connection-alias convergence, exact API/network/credential access, mutation ownership | ambient kubeconfig, unrestricted clients, broad managed-cluster parity |
 | Profiles/provider bindings | one optional assembly selector, provider-native typed configuration, deterministic provider resolution, actual physical plan | target/placement/substrate selectors, application installation objects, implicit provider replacement |
-| Deployment-state migration | exact v0.8 baseline, logical-to-physical identity mapping, lifecycle-authority transfer, resumable migration, rollback and forward recovery | best-effort state adoption, silent destructive replacement, package-install-time mutation |
+| Deployment-state migration | exact released-v0.7.1 baseline, logical-to-physical identity mapping, lifecycle-authority transfer, resumable migration, rollback and forward recovery | treating the unreleased v0.8 engineering line as a public baseline, best-effort state adoption, silent destructive replacement, package-install-time mutation |
 | Effect safety | effect identity, guarantee classification, receipts, fencing, explicit unknown outcomes, crash-boundary evidence | claiming exactly-once external side effects, guessing success or absence, hiding provider uncertainty |
 | Scheduling | shared definition/instance/occurrence/provider semantics with distinct Job/workflow/actor/operator owners | one generic callback timer, provider-specific scheduling syntax |
 | Saga coordination | saga identity, durable steps, compensation, commit/irreversible boundaries, recovery, plan/OTel semantics | distributed ACID, hidden 2PC, implicit compensation |
@@ -239,7 +241,7 @@ prose never creates a second implementation authority.
 
 ## Maturity contract
 
-v0.9 does not automatically promote v0.8 beta, preview, or experimental features.
+v0.9 does not automatically promote beta, preview, or experimental features from the unreleased v0.8 engineering line.
 
 | Surface | v0.9 promise |
 | --- | --- |
@@ -250,7 +252,7 @@ v0.9 does not automatically promote v0.8 beta, preview, or experimental features
 | External capability bindings | Stable candidate after managed/external lifecycle, readiness, Secret, migration, and no-mutation conformance |
 | Kubernetes cluster capability | Stable candidate after existing operator aliases and imported handles share one authority across current and external clusters |
 | Profiles/provider bindings | Stable candidate after target-selector removal, deterministic provider configuration/resolution, physical-plan evidence, and persisted-plan migration gates pass |
-| Deployment-state migration | Stable release mechanism only after the exact released-v0.8 imperative, Alchemy, and GitOps paths pass interruption, rollback, forward-recovery, and deletion gates |
+| Deployment-state migration | Stable release mechanism only after the exact released-v0.7.1 imperative, Alchemy, and GitOps paths pass interruption, rollback, forward-recovery, and deletion gates |
 | Effect receipt/fencing contract | Stable shared runtime contract after Job, workflow, command, processor, and reconciler integrations preserve declared guarantees and honest unknown outcomes |
 | Scheduling algebra | Stable candidate after Job/workflow scheduling and one lifecycle-owned timer pass shared identity/provider conformance |
 | `application.transaction.saga(...)` | Beta unless compensation, crash recovery, idempotency, unknown-outcome, and upgrade semantics are convincingly evidenced |
@@ -260,7 +262,7 @@ v0.9 does not automatically promote v0.8 beta, preview, or experimental features
 | `codeAgent()` | Release-blocking preview maintained composition; requires one real OpenCode-backed local/worktree vertical with stable run/workspace identity, explicit authority, idempotent retry, cancellation, process replacement, and ordered cleanup. Distributed Celld/OpenCode is deferred and blocked pending upstream runtime direction. |
 | Builder development environment | Release-blocking preview development integration; requires the complete closed loopback-OpenCode change journey while remaining independent from Celld and a healthy generated application |
 | `journey()` | Development/testing contract; may stabilize independently from runtime semantics |
-| Stable v0.8 authoring/runtime contracts | 1.0 candidates unless explicitly deprecated during v0.9 |
+| Stable v0.7.1 authoring/runtime contracts | 1.0 candidates unless explicitly deprecated during v0.9; unreleased v0.8 additions retain their separately recorded maturity |
 | Existing beta/preview features | Remain beta/preview unless separately promoted through evidence |
 | Website/docs | Version matched, acceptance tested, and truthful for the exact package train |
 
@@ -283,7 +285,7 @@ Maturity controls compatibility promises, not whether an accepted v0.9 deliverab
 - one clean generated Agentic Start browser journey through real public boundaries, including session
   establishment, primary navigation, streaming/reconnection, approval/result visibility, accessibility
   smoke checks, and failure evidence that identifies every unvisited or failed page;
-- exact released-v0.8 migration, public-contract, package, documentation, and clean-context evidence.
+- exact released-v0.7.1 migration, public-contract, package, documentation, and clean-context evidence.
 
 Evidence is proportional to maturity. Stable surfaces require the complete provider and compatibility
 matrix. Beta surfaces require at least one realistic deployed provider and the failure/recovery behavior
@@ -505,7 +507,7 @@ the canonical implementation algebra.
 
 Process object identity is never persisted identity. The compiler derives a versioned implementation
 identity from application/capability/provider/declaration provenance or an explicit `.identified(...)`
-escape hatch, and rejects two logical nodes claiming one physical resource. Active v0.8 state crosses this
+escape hatch, and rejects two logical nodes claiming one physical resource. Active v0.7.1 state crosses this
 identity boundary only through the restart-safe [ApplicationPlan and Deployment-State Migration
 RFP](./rfp-v09-application-plan-and-deployment-state-migration.md), including lifecycle-authority transfer,
 rollback before commit, and forward recovery afterward.
@@ -1975,9 +1977,9 @@ instructions or grants follow-up network authority.
 
 ## Builder development environment
 
-The development-only Builder refines the accepted v0.8 Independent Development Environment contract; it does not
+The development-only Builder refines the accepted v0.8 engineering contract for an Independent Development Environment; it does not
 replace it with a chat page hosted by the generated application. Its independent daemon/portal remains
-usable through source, compile, startup, and route failure. The v0.8 visual-selection provenance,
+usable through source, compile, startup, and route failure. The unreleased v0.8 visual-selection provenance,
 persistent attachment/referent, mutation journal, undo, recovery, and security contracts remain normative.
 
 Builder turns `codeAgent()` into a repo-aware visual development journey for Agentic Start and other
@@ -2697,7 +2699,7 @@ foundation can identify the exact released v0.7.1 input and explain its migratio
 ┌──────────────────────────────────────────────┐
 │ Mandatory compatibility foundation           │
 │                                              │
-│ exact v0.8 baseline → provider identity      │
+│ exact v0.7.1 baseline → provider identity    │
 │ → resolver/plan → effect safety → migration  │
 └──────────────────────────────────────────────┘
                        ↓
@@ -2741,10 +2743,10 @@ Documentation is not “done” if it papers over an awkward API that can still 
 
 ```text
 0.9.0
-  exact released-v0.8 package/artifact/plan/catalog/runtime/evidence baseline
+  exact released-v0.7.1 package/artifact/plan/catalog/runtime/evidence baseline
   machine-readable public-contract/package/diagnostic inventory
   deterministic implementation identity and profile resolver/plan schema
-  read-only v0.8 logical-to-physical mapping and migration proposal
+  read-only v0.7.1 logical-to-physical mapping and migration proposal
   effect guarantee/receipt/unknown-outcome schemas and crash harness
   minimal journey() runner used by every following semantic increment
   website skeleton + first primitive guide
@@ -2945,7 +2947,7 @@ alphas.
 - workspace/source/shell/network/approval capabilities remain separately authorized;
 - research agent can replace SearXNG with another conforming provider without application-source changes;
 - Builder exposes conversation, plan, changes, preview, and evidence without hiding mutation or authority;
-- Builder preserves the v0.8 independent daemon, visual provenance, attachments/referents, journal, undo,
+- Builder preserves the unreleased v0.8 engineering line's independent daemon, visual provenance, attachments/referents, journal, undo,
   application-failure recovery, and security contracts;
 - Agentic Start includes only thin development configuration while reusable Builder machinery remains packaged;
 - production builds exclude Builder unless an application explicitly productizes it;
@@ -2977,7 +2979,7 @@ alphas.
 
 - stable candidate surface machine-inventoried;
 - graph/plan/event/frontier/runtime-access/provider/generated-source contracts versioned;
-- representative v0.8 upgrade produces explicit migration/policy diffs;
+- representative v0.7.1 upgrade produces explicit migration/policy diffs;
 - `app.job()` vocabulary migration documented;
 - destructive migration never hidden behind package installation.
 
@@ -2996,13 +2998,14 @@ alphas.
 
 # Migration requirements
 
-v0.9 preserves v0.8 applications unless an explicit pre-1.0 simplification is approved and migrated.
+v0.9 preserves released v0.7.1 applications unless an explicit pre-1.0 simplification is approved and migrated.
+The unreleased v0.8 engineering line is a development input to v0.9, not a separately published compatibility promise.
 
 - existing low-level `app.job(...)` receives migration to `application.workload.job(...)`;
 - existing stable authoring APIs remain valid or emit explicit deprecation guidance;
 - existing local/AWS/Kubernetes/external classifications remain readable as provider/resource evidence;
 - existing profiles retain meaning and become the sole assembly-policy selector;
-- persisted v0.8 target/installation state enters the versioned deployment-state migration protocol;
+- persisted v0.7.1 target/installation state enters the versioned deployment-state migration protocol;
   read-only discovery maps logical provider identity, canonical physical identity, lifecycle authority,
   and configuration digest before mutation;
 - ambiguous mappings, competing owners, identity collisions, and unsupported provider transitions fail
@@ -3285,7 +3288,7 @@ Applik8s v0.9.0 is ready only when:
 40. Chirp passes the normative `production-aws` and `production-kubernetes` profiles with unchanged
     semantic source, the frozen provider-constructor vocabulary, live readiness, update/reconcile/delete
     evidence, package isolation, and the required TypeKro/Alchemy boundaries;
-41. an exact released-v0.8 fixture upgrades through the versioned deployment-state protocol in imperative
+41. an exact released-v0.7.1 fixture upgrades through the versioned deployment-state protocol in imperative
     and declarative paths, including interruption, retry, conflict, rollback, forward recovery, and
     deletion with at most one active lifecycle authority, resumable quiescent handoff, no duplicate
     physical owners, and no silent replacement; and

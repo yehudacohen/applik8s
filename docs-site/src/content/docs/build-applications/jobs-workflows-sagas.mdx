@@ -1,0 +1,119 @@
+---
+title: Jobs, workflows, and Sagas
+description: Choose finite execution, durable orchestration, or compensating coordination from the recovery behavior you need.
+---
+
+These primitives are ordinary typed callables at the point of use. Their declarations add the metadata the
+runtime needs to resume, retry, authorize, and explain execution without putting provider SDKs in domain
+code.
+
+## Finite jobs
+
+Use `application.job(...)` when work is finite, may outlive its caller, and may retry as one whole attempt.
+
+```ts
+const RebuildSearch = application.job(
+  'search.rebuild.v1',
+  {
+    input: type({ workspaceId: 'string' }),
+    output: type({ indexed: 'number.integer >= 0' }),
+    progress: type({ indexed: 'number.integer >= 0' }),
+    error: type({ code: "'source-unavailable' | 'index-unavailable'" }),
+  },
+  {
+    retries: 3,
+    timeout: '30m',
+    idempotencyKey: input => input.workspaceId,
+    retention: { result: '2d', progress: '1h' },
+  },
+  async (input, execution) => {
+    let indexed = 0;
+    for await (const page of DocumentsForWorkspace.pages(input)) {
+      execution.throwIfCancelled();
+      await SearchIndex.replace(page.rows);
+      indexed += page.rows.length;
+      await execution.progress({ indexed });
+    }
+    return { indexed };
+  },
+);
+
+const result = await RebuildSearch({ workspaceId });
+const run = await RebuildSearch.start({ workspaceId });
+await run.cancel('Superseded by a newer rebuild');
+```
+
+Direct invocation waits for the typed result. `start()` returns a durable run handle. Caller timeout does
+not silently cancel the durable run, and a retry creates a new fenced attempt beneath the same logical run.
+
+`application.workload.job(...)` is different: it declares a low-level Kubernetes or cloud workload. Use it
+only when infrastructure identity is the application requirement.
+
+## Durable workflows
+
+Use a workflow when authored checkpoints, timers, child calls, or signals must survive worker replacement.
+The handler may call application handles directly; the compiler captures those dependencies and the
+workflow provider records durable execution history.
+
+```ts
+const PublishDocument = application.workflow(
+  workflow('documents.publish.v1', {
+    input: type({ documentId: 'string' }),
+    output: type({ published: 'boolean' }),
+  }),
+  { retries: 2 },
+  async input => {
+    const document = await Document.get({ id: input.documentId });
+    await NotifySubscribers({ documentId: document.id });
+    return { published: true };
+  },
+);
+
+const run = await PublishDocument.start({ documentId });
+```
+
+Use a job instead when restarting the whole function is correct. A workflow is not a generic background
+function wrapper.
+
+## Sagas
+
+Use `application.transaction.saga(...)` when several systems commit independently and failures require
+explicit compensation or observation of an unknown outcome.
+
+```ts
+const Checkout = application.transaction.saga(
+  'checkout.place-order.v1',
+  {
+    input: type({ cartId: 'string' }),
+    output: type({ orderId: 'string' }),
+  },
+  async (input, transaction) => {
+    const reservation = await transaction.step(
+      'reserve-inventory',
+      () => Inventory.reserve(input),
+      { compensate: result => Inventory.release(result) },
+    );
+
+    const order = await transaction.commit(
+      'create-order',
+      () => Orders.create({ cartId: input.cartId, reservationId: reservation.id }),
+      { observe: () => Orders.observeByCart(input.cartId) },
+    );
+
+    return { orderId: order.id };
+  },
+);
+```
+
+Compensation runs in reverse only across the open frontier. A commit closes the earlier compensation
+frontier. If a provider may have accepted a request before the connection failed, report an unknown outcome
+and supply an observer; never guess and compensate a possibly committed effect.
+
+## Operations and evidence
+
+All three families preserve framework-derived principal and causal-principal lineage. Their starts,
+attempts, outcomes, cancellations, and compensations produce typed observations. Use `applik8s explain` to
+inspect provider placement and use the operations UI for redacted runtime evidence.
+
+See also [Choose the right primitive](./decision-guide/) and
+[Batch and stream processing](./batch-and-stream-processing/).

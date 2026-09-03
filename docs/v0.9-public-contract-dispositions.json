@@ -5,6 +5,98 @@
   "documentation": "docs/packages.md",
   "overrides": [
     {
+      "id": "umbrella-root-pre-1.0-review-boundary",
+      "package": "@applik8s/applik8s",
+      "entrypoints": ["."],
+      "maturity": "experimental",
+      "stability": "experimental",
+      "owner": "framework-authoring",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
+      "reason": "The umbrella root remains convenient before 1.0, but only the explicitly reviewed common-path symbols are 1.0 stability candidates; specialist runtime and compiler exports remain pre-1.0 until moved to focused entrypoints."
+    },
+    {
+      "id": "umbrella-root-reviewed-common-path",
+      "package": "@applik8s/applik8s",
+      "entrypoints": ["."],
+      "symbols": [
+        "ActorRuntime",
+        "ApplicationHost",
+        "Authorization",
+        "Database",
+        "EventLog",
+        "IdentityProvider",
+        "JobRuntime",
+        "KubernetesCluster",
+        "ManagedModelStore",
+        "ObjectStorage",
+        "Observability",
+        "OperatorRuntime",
+        "Queue",
+        "Scheduler",
+        "Search",
+        "TransactionalDatabase",
+        "WorkflowEngine",
+        "actor",
+        "actorState",
+        "app",
+        "applicationGraphFor",
+        "clear",
+        "command",
+        "config",
+        "defineApplicationModule",
+        "defineApplicationProvider",
+        "event",
+        "field",
+        "model",
+        "module",
+        "providers",
+        "schedule",
+        "sdk",
+        "secret",
+        "stream",
+        "type",
+        "typeKro",
+        "workflow"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "stability": "stable",
+      "owner": "framework-authoring",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
+      "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+    },
+    {
+      "id": "umbrella-reviewed-authoring-subpaths",
+      "package": "@applik8s/applik8s",
+      "entrypoints": [
+        "./dns",
+        "./drizzle",
+        "./dsl",
+        "./operator",
+        "./structured-generation",
+        "./typekro"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "stability": "stable",
+      "owner": "framework-authoring",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
+      "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
+    },
+    {
+      "id": "extension-runtime-pre-1.0",
+      "package": "@applik8s/applik8s",
+      "entrypoints": [
+        "./graph-extension-runtime",
+        "./legacy-model-command-runtime",
+        "./managed-effect-runtime",
+        "./provider-extension-runtime"
+      ],
+      "maturity": "experimental",
+      "stability": "experimental",
+      "owner": "framework-internals",
+      "evidence": ["workspace-typecheck", "extension-package-consumer", "public-contract-freeze"],
+      "reason": "These narrowly exported seams support first-party extension packages; they are intentionally not named internal, but remain pre-1.0 implementation contracts rather than application-authoring APIs."
+    },
+    {
       "id": "finite-jobs-beta-entrypoints",
       "package": "@applik8s/applik8s",
       "entrypoints": [
@@ -47,13 +139,23 @@
       "stability": "stable",
       "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
       "packages": [
-        "@applik8s/applik8s",
         "@applik8s/ai",
         "@applik8s/core",
         "@applik8s/identity",
         "@applik8s/mcp",
         "@applik8s/operations",
         "@applik8s/sdk"
+      ]
+    },
+    {
+      "id": "umbrella-pre-1.0",
+      "owner": "framework-authoring",
+      "maturity": "experimental",
+      "compatibility": ["authoring", "runtime"],
+      "stability": "experimental",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/applik8s"
       ]
     },
     {

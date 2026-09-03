@@ -210,7 +210,7 @@ for (const processor of effectProcessors) {
     !source.includes('@fixture/acquisition/runtime')
     || !source.includes('acquireEveryWay')
     || !source.includes('acquireThroughHelper')
-    || source.includes('@applik8s/applik8s/internal/provider-runtime')
+    || source.includes('@applik8s/applik8s/provider-extension-runtime')
     || source.includes('application.inject')
     || source.includes('application.profile')
     || source.includes('application.provide')

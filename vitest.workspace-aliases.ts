@@ -8,9 +8,9 @@ import { fileURLToPath, URL } from 'node:url';
  */
 export function workspaceAliases(): Record<string, string> {
   return {
-    '@applik8s/applik8s/internal/provider-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-provider-runtime.ts', import.meta.url)),
-    '@applik8s/applik8s/internal/managed-effects': fileURLToPath(new URL('./packages/applik8s/src/application-managed-effects.ts', import.meta.url)),
-    '@applik8s/applik8s/internal/historical-model-commands': fileURLToPath(new URL('./packages/applik8s/src/historical-model-commands.ts', import.meta.url)),
+    '@applik8s/applik8s/provider-extension-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-provider-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/managed-effect-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-managed-effects.ts', import.meta.url)),
+    '@applik8s/applik8s/legacy-model-command-runtime': fileURLToPath(new URL('./packages/applik8s/src/historical-model-commands.ts', import.meta.url)),
     '@applik8s/applik8s/deployment-registry': fileURLToPath(new URL('./packages/applik8s/src/deployment-registry.ts', import.meta.url)),
     '@applik8s/applik8s/processor-runtime': fileURLToPath(new URL('./packages/applik8s/src/processor-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/event-log-runtime': fileURLToPath(new URL('./packages/applik8s/src/event-log-runtime.ts', import.meta.url)),
@@ -22,7 +22,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/job-controller-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-job-controller-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/job-store': fileURLToPath(new URL('./packages/applik8s/src/application-job-store.ts', import.meta.url)),
     '@applik8s/applik8s/actor-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-actors.ts', import.meta.url)),
-    '@applik8s/applik8s/internal/application-graph-extension': fileURLToPath(new URL('./packages/applik8s/src/application-graph-extension.ts', import.meta.url)),
+    '@applik8s/applik8s/graph-extension-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-graph-extension.ts', import.meta.url)),
     '@applik8s/applik8s/lakehouse-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-lakehouse.ts', import.meta.url)),
     '@applik8s/applik8s/postgres-runtime-contract': fileURLToPath(new URL('./packages/applik8s/src/postgres-runtime-contract.ts', import.meta.url)),
     '@applik8s/applik8s/managed-model-postgres-runtime': fileURLToPath(new URL('./packages/applik8s/src/managed-model-postgres-runtime.ts', import.meta.url)),

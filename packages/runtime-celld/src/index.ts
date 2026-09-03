@@ -13,7 +13,7 @@ import {
   resolveApplicationActorInvocationAuthority,
   withApplicationActorTurnAuthority,
 } from '@applik8s/applik8s/actor-runtime';
-import { withApplicationManagedEffects } from '@applik8s/applik8s/internal/managed-effects';
+import { withApplicationManagedEffects } from '@applik8s/applik8s/managed-effect-runtime';
 import {
   captureApplicationTelemetryContext,
   runApplicationTelemetryBoundary,

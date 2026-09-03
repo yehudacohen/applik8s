@@ -4,14 +4,90 @@ description: Declare domain state once and use the same typed handle for writes,
 ---
 
 ```ts
-export const Entry = application.model(entries, { database: Database });
+export const Entry = application.model(entries, {
+  name: 'Entry',
+  database: Database,
+});
 
 export const RecentEntries = Entry.query(
-  { input: type({ limit: 'number' }), output: Entry.schema.array() },
-  (input, context) => context.database.select().from(Entry).limit(input.limit),
+  {
+    input: type({ authorId: 'string', limit: 'number.integer >= 1' }),
+    output: Entry.schema.select.array(),
+    authorize: ({ principal }) => principal.id.length > 0,
+  },
+  (input, context) => context
+    .select(Entry)
+    .where(entry => entry.authorId.eq(input.authorId))
+    .orderBy(entry => entry.createdAt.desc())
+    .limit(input.limit),
 );
 ```
 
 `Entry.create(...)` is an admitted mutation. `RecentEntries(...)` is a bounded one-time query. A view is
 appropriate when the result must be persisted, invalidated, subscribed to, or rebuilt. Model callbacks
 receive the same domain types and authority context regardless of the maintained database implementation.
+
+## Declare once, use the model everywhere
+
+`application.model(table, ...)` promotes a Drizzle table into an Applik8s model without asking you to map
+every database field into a second runtime schema. The promoted handle retains its Drizzle relationships and
+adds typed mutation, query, event, authorization, and graph metadata.
+
+```ts
+await Entry.create({ id, authorId, body, createdAt });
+
+await Entry.edit(id, async entry => {
+  await entry.update({ body: revisedBody });
+});
+
+await Entry.delete({ id });
+```
+
+Mutations are async because admission, concurrency checks, durable receipts, and the selected model provider
+may cross process boundaries. They retain the natural `Entry.create(...)` spelling rather than exposing a
+generic command gateway.
+
+## Queries answer once
+
+A query has one typed input/output contract, one authorization rule, budgets, and one implementation. It may
+be called from HTTP, another managed closure, or server code using the same handle. Provider-native selection
+is expressed through `context.select(Model)` so the compiler can preserve predicates and ordering for
+PostgreSQL, Kubernetes, and other qualified stores.
+
+When the query is one portable ordered finite selection, it also exposes `Query.onBatch(...)`. Arbitrary
+queries do not receive that method because the framework cannot invent resumable membership semantics.
+
+## Views are persistent application read contracts
+
+```ts
+export const PublishedEntries = Entry.view(
+  {
+    input: type({ limit: 'number.integer >= 1' }),
+    output: Entry.schema.select.array(),
+    database: Database,
+    authorize: ({ principal }) => principal.id.length > 0,
+  },
+  async function publishedEntries(input, context) {
+    return context
+      .select(Entry)
+      .where(entry => entry.state.eq('published'))
+      .orderBy(entry => entry.createdAt.desc())
+      .limit(input.limit);
+  },
+);
+
+const snapshot = await PublishedEntries({ limit: 20 });
+const subscription = PublishedEntries.subscribe({ limit: 20 });
+```
+
+The callable returns the initial snapshot. `subscribe` is explicit and resumes through the client/runtime
+cursor contract. Invalidation follows model identity and relationships, not physical table names.
+
+## Kubernetes resources use the same model vocabulary
+
+`application.crd(...)` creates a Kubernetes-backed model with the same create, query, view, lifecycle, and
+relationship concepts. Its reconciliation surface is `Resource.on.reconcile(...)`; users do not drop down to
+arbitrary GVK clients for normal domain behavior.
+
+Use [Managed models and reconciliation](./managed-models-and-reconciliation/) for continuous convergence and
+[Batch and stream processing](./batch-and-stream-processing/) for finite scans.

@@ -32,7 +32,7 @@ bun run applik8s build <entry.ts> --typekro --composition-name <name> --out-dir 
 ```
 
 - Many gates (`test:implemented`, `test:v0X:contracts`, `check:v0X:...`) run `build:packages` first. If you run vitest directly after editing a workspace package's src, `vitest.workspace-aliases.ts` resolves `@applik8s/*` to source, so no build is needed for vertical tests.
-- `test:implemented` shards by default 16 shards / 1 worker (`APPLIK8S_TEST_SHARDS`, `APPLIK8S_TEST_MAX_WORKERS`) and excludes `packages/compiler/test/application-workflows.vertical.test.ts` from shards, running it separately — compiler tests are heap-heavy, keep that split.
+- `test:implemented` shards by default 32 shards / 1 worker (`APPLIK8S_TEST_SHARDS`, `APPLIK8S_TEST_MAX_WORKERS`) and runs the artifact, reactive, and workflow compiler monoliths in bounded fresh-process groups — compiler tests retain generated ESM graphs, so keep those splits.
 
 ## E2E / cluster tests
 

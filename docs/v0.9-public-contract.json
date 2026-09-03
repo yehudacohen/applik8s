@@ -315,14 +315,14 @@
       "directory": "packages/applik8s",
       "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
       "contract": {
-        "disposition": "foundation-authoring",
+        "disposition": "umbrella-pre-1.0",
         "owner": "framework-authoring",
-        "maturity": "stable-1.0-candidate",
+        "maturity": "experimental",
         "compatibility": [
           "authoring",
           "runtime"
         ],
-        "stability": "stable",
+        "stability": "experimental",
         "documentation": "docs/packages.md",
         "evidence": [
           "workspace-typecheck",
@@ -360,7 +360,16 @@
           "source": "packages/applik8s/src/index.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-root-pre-1.0-review-boundary",
+            "owner": "framework-authoring",
+            "maturity": "experimental",
+            "stability": "experimental",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "The umbrella root remains convenient before 1.0, but only the explicitly reviewed common-path symbols are 1.0 stability candidates; specialist runtime and compiler exports remain pre-1.0 until moved to focused entrypoints."
           },
           "symbols": [
             "AWS",
@@ -2566,6 +2575,36 @@
           },
           "symbolContracts": [
             {
+              "name": "ActorRuntime",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "ApplicationHost",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
               "name": "ApplicationJobBinding",
               "contract": {
                 "override": "finite-jobs-root-symbols",
@@ -3518,6 +3557,291 @@
               }
             },
             {
+              "name": "Authorization",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "Database",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "EventLog",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "IdentityProvider",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "JobRuntime",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "KubernetesCluster",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "ManagedModelStore",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "ObjectStorage",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "Observability",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "OperatorRuntime",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "Queue",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "Scheduler",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "Search",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "TransactionalDatabase",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "WorkflowEngine",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "actor",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "actorState",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "app",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "applicationGraphFor",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
               "name": "applicationJobLifecycleEvents",
               "contract": {
                 "override": "finite-jobs-root-symbols",
@@ -3588,6 +3912,51 @@
               }
             },
             {
+              "name": "clear",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "command",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "config",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
               "name": "createApplicationJobBinding",
               "contract": {
                 "override": "finite-jobs-root-symbols",
@@ -3630,6 +3999,66 @@
               }
             },
             {
+              "name": "defineApplicationModule",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "defineApplicationProvider",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "event",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "field",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
               "name": "installApplicationJobRuntimeResolver",
               "contract": {
                 "override": "finite-jobs-root-symbols",
@@ -3641,6 +4070,156 @@
                   "kubernetes-job-lifecycle"
                 ],
                 "reason": "Root re-exports retain the same beta contract as the focused finite-job entrypoints."
+              }
+            },
+            {
+              "name": "model",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "module",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "providers",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "schedule",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "sdk",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "secret",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "stream",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "type",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "typeKro",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
+              }
+            },
+            {
+              "name": "workflow",
+              "contract": {
+                "override": "umbrella-root-reviewed-common-path",
+                "owner": "framework-authoring",
+                "maturity": "stable-1.0-candidate",
+                "stability": "stable",
+                "evidence": [
+                  "workspace-typecheck",
+                  "clean-package-consumer",
+                  "public-contract-freeze"
+                ],
+                "reason": "These symbols are the intentionally reviewed, provider-neutral common authoring path presented in the v0.9 documentation and maintained examples."
               }
             }
           ]
@@ -3781,7 +4360,16 @@
           "source": "packages/applik8s/src/dns.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "DnsControllerObservation",
@@ -3832,7 +4420,16 @@
           "source": "packages/applik8s/src/drizzle.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "ApplicationAuthenticatedPrincipalDefault",
@@ -3866,7 +4463,16 @@
           "source": "packages/applik8s/src/dsl.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "ApplicationCommandObservation",
@@ -4740,11 +5346,20 @@
           }
         },
         {
-          "name": "./internal/application-graph-extension",
+          "name": "./graph-extension-runtime",
           "source": "packages/applik8s/src/application-graph-extension.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "extension-runtime-pre-1.0",
+            "owner": "framework-internals",
+            "maturity": "experimental",
+            "stability": "experimental",
+            "evidence": [
+              "workspace-typecheck",
+              "extension-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These narrowly exported seams support first-party extension packages; they are intentionally not named internal, but remain pre-1.0 implementation contracts rather than application-authoring APIs."
           },
           "symbols": [
             "ApplicationGraphExtensionContribution",
@@ -4754,53 +5369,7 @@
             "registerApplicationGraphExtension"
           ],
           "symbolContract": {
-            "inherits": "entrypoint:@applik8s/applik8s:./internal/application-graph-extension"
-          }
-        },
-        {
-          "name": "./internal/historical-model-commands",
-          "source": "packages/applik8s/src/historical-model-commands.ts",
-          "kind": "module",
-          "contract": {
-            "inherits": "package:@applik8s/applik8s"
-          },
-          "symbols": [
-            "applicationModelCommandRegistrar"
-          ],
-          "symbolContract": {
-            "inherits": "entrypoint:@applik8s/applik8s:./internal/historical-model-commands"
-          }
-        },
-        {
-          "name": "./internal/managed-effects",
-          "source": "packages/applik8s/src/application-managed-effects.ts",
-          "kind": "module",
-          "contract": {
-            "inherits": "package:@applik8s/applik8s"
-          },
-          "symbols": [
-            "withApplicationManagedEffects"
-          ],
-          "symbolContract": {
-            "inherits": "entrypoint:@applik8s/applik8s:./internal/managed-effects"
-          }
-        },
-        {
-          "name": "./internal/provider-runtime",
-          "source": "packages/applik8s/src/application-provider-runtime.ts",
-          "kind": "module",
-          "contract": {
-            "inherits": "package:@applik8s/applik8s"
-          },
-          "symbols": [
-            "ApplicationProviderRuntimeSelectionError",
-            "bindApplicationCallableDependencies",
-            "bindApplicationProviderDependencies",
-            "bindApplicationProviderOperation",
-            "resolveApplicationProviderRuntimeImplementation"
-          ],
-          "symbolContract": {
-            "inherits": "entrypoint:@applik8s/applik8s:./internal/provider-runtime"
+            "inherits": "entrypoint:@applik8s/applik8s:./graph-extension-runtime"
           }
         },
         {
@@ -5108,6 +5677,52 @@
           }
         },
         {
+          "name": "./legacy-model-command-runtime",
+          "source": "packages/applik8s/src/historical-model-commands.ts",
+          "kind": "module",
+          "contract": {
+            "override": "extension-runtime-pre-1.0",
+            "owner": "framework-internals",
+            "maturity": "experimental",
+            "stability": "experimental",
+            "evidence": [
+              "workspace-typecheck",
+              "extension-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These narrowly exported seams support first-party extension packages; they are intentionally not named internal, but remain pre-1.0 implementation contracts rather than application-authoring APIs."
+          },
+          "symbols": [
+            "applicationModelCommandRegistrar"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./legacy-model-command-runtime"
+          }
+        },
+        {
+          "name": "./managed-effect-runtime",
+          "source": "packages/applik8s/src/application-managed-effects.ts",
+          "kind": "module",
+          "contract": {
+            "override": "extension-runtime-pre-1.0",
+            "owner": "framework-internals",
+            "maturity": "experimental",
+            "stability": "experimental",
+            "evidence": [
+              "workspace-typecheck",
+              "extension-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These narrowly exported seams support first-party extension packages; they are intentionally not named internal, but remain pre-1.0 implementation contracts rather than application-authoring APIs."
+          },
+          "symbols": [
+            "withApplicationManagedEffects"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./managed-effect-runtime"
+          }
+        },
+        {
           "name": "./managed-model-postgres-runtime",
           "source": "packages/applik8s/src/managed-model-postgres-runtime.ts",
           "kind": "module",
@@ -5179,7 +5794,16 @@
           "source": "packages/applik8s/src/operator.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "AnyCrdFactoryMap",
@@ -6249,6 +6873,33 @@
           }
         },
         {
+          "name": "./provider-extension-runtime",
+          "source": "packages/applik8s/src/application-provider-runtime.ts",
+          "kind": "module",
+          "contract": {
+            "override": "extension-runtime-pre-1.0",
+            "owner": "framework-internals",
+            "maturity": "experimental",
+            "stability": "experimental",
+            "evidence": [
+              "workspace-typecheck",
+              "extension-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These narrowly exported seams support first-party extension packages; they are intentionally not named internal, but remain pre-1.0 implementation contracts rather than application-authoring APIs."
+          },
+          "symbols": [
+            "ApplicationProviderRuntimeSelectionError",
+            "bindApplicationCallableDependencies",
+            "bindApplicationProviderDependencies",
+            "bindApplicationProviderOperation",
+            "resolveApplicationProviderRuntimeImplementation"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./provider-extension-runtime"
+          }
+        },
+        {
           "name": "./provider-telemetry-runtime",
           "source": "packages/applik8s/src/application-provider-telemetry-runtime.ts",
           "kind": "module",
@@ -6639,7 +7290,16 @@
           "source": "packages/applik8s/src/structured-generation.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "ApplicationStructuredGenerationDeterministicProvider",
@@ -6789,7 +7449,16 @@
           "source": "packages/applik8s/src/typekro.ts",
           "kind": "module",
           "contract": {
-            "inherits": "package:@applik8s/applik8s"
+            "override": "umbrella-reviewed-authoring-subpaths",
+            "owner": "framework-authoring",
+            "maturity": "stable-1.0-candidate",
+            "stability": "stable",
+            "evidence": [
+              "workspace-typecheck",
+              "clean-package-consumer",
+              "public-contract-freeze"
+            ],
+            "reason": "These focused subpaths are the reviewed authoring imports used by maintained applications and the version-matched public documentation."
           },
           "symbols": [
             "Applik8sTypeKroAdapterApi",
@@ -14630,11 +15299,11 @@
         "packages/applik8s/src/task-operation-runtime.ts",
         "packages/core/src/application-operation-authority.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -14757,11 +15426,11 @@
       "sources": [
         "packages/applik8s/src/task-operation-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -14775,11 +15444,11 @@
       "sources": [
         "packages/applik8s/src/task-operation-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -15738,11 +16407,11 @@
         "packages/core/src/common.ts",
         "packages/testing/src/harness.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16668,11 +17337,11 @@
         "packages/applik8s/src/application-finite-jobs.ts",
         "packages/applik8s/src/application-job-durable-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16687,11 +17356,11 @@
         "packages/applik8s/src/application-finite-jobs.ts",
         "packages/applik8s/src/application-job-durable-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16705,11 +17374,11 @@
       "sources": [
         "packages/applik8s/src/application-job-store.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16723,11 +17392,11 @@
       "sources": [
         "packages/applik8s/src/application-job-store.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16741,11 +17410,11 @@
       "sources": [
         "packages/applik8s/src/application-job-durable-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16910,11 +17579,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16928,11 +17597,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16946,11 +17615,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16965,11 +17634,11 @@
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -16983,11 +17652,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17002,11 +17671,11 @@
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17020,11 +17689,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17039,11 +17708,11 @@
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17057,11 +17726,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17075,11 +17744,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17094,11 +17763,11 @@
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17113,11 +17782,11 @@
         "packages/applik8s/src/kubernetes-cluster-runtime.ts",
         "packages/applik8s/src/kubernetes-cluster-wit-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17131,11 +17800,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17149,11 +17818,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17167,11 +17836,11 @@
       "sources": [
         "packages/applik8s/src/kubernetes-cluster-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17187,11 +17856,11 @@
         "packages/applik8s/src/kubernetes-cluster-wit-runtime.ts",
         "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -17206,11 +17875,11 @@
         "packages/applik8s/src/application-builder.ts",
         "packages/core/src/common.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -18785,11 +19454,11 @@
         "packages/applik8s/src/application-query-batching.ts",
         "packages/runtime-postgres/src/query-batch.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -18858,11 +19527,11 @@
         "packages/applik8s/src/dns.ts",
         "packages/core/src/common.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19418,11 +20087,11 @@
       "sources": [
         "packages/applik8s/src/application-sagas.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19436,11 +20105,11 @@
       "sources": [
         "packages/applik8s/src/application-sagas.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19454,11 +20123,11 @@
       "sources": [
         "packages/applik8s/src/application-sagas.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19472,11 +20141,11 @@
       "sources": [
         "packages/applik8s/src/application-sagas.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19490,11 +20159,11 @@
       "sources": [
         "packages/applik8s/src/application-sagas.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -19661,11 +20330,11 @@
         "packages/applik8s/src/dns.ts",
         "packages/core/src/common.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -23561,11 +24230,11 @@
       "sources": [
         "packages/applik8s/src/application-generated-runtime-sources.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -23999,11 +24668,11 @@
         "packages/applik8s/src/application-callback.ts",
         "packages/applik8s/src/application-route-source.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24019,11 +24688,11 @@
       "sources": [
         "packages/applik8s/src/application-route-source.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24291,11 +24960,11 @@
       "sources": [
         "packages/applik8s/src/application-server-bundle.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24311,11 +24980,11 @@
       "sources": [
         "packages/applik8s/src/application-server-bundle.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24331,11 +25000,11 @@
       "sources": [
         "packages/applik8s/src/application-server-bundle.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24374,11 +25043,11 @@
       "sources": [
         "packages/applik8s/src/application-generated-runtime-sources.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24397,11 +25066,11 @@
         "packages/start-agentic/src/identity-runtime.ts",
         "packages/start-agentic/src/payments-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -24541,11 +25210,11 @@
       "sources": [
         "packages/applik8s/src/application-runtime-modules.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25172,11 +25841,11 @@
       "sources": [
         "packages/applik8s/src/application-schedule-local-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25193,11 +25862,11 @@
         "packages/applik8s/src/application-generated-runtime-sources.ts",
         "packages/applik8s/src/application-server-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25568,11 +26237,11 @@
         "packages/compiler/src/application-processors/index.ts",
         "packages/start-agentic/src/identity-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25721,11 +26390,11 @@
         "packages/applik8s/src/application-runtime-modules.ts",
         "packages/compiler/src/application-jobs/index.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25748,11 +26417,11 @@
         "packages/runtime-kubernetes/src/schedule.ts",
         "packages/server/src/kubernetes-gateway.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",
@@ -25770,11 +26439,11 @@
         "packages/applik8s/src/application-runtime-modules.ts",
         "packages/applik8s/src/application-server-runtime.ts"
       ],
-      "maturity": "stable-1.0-candidate",
+      "maturity": "experimental",
       "compatibility": [
         "runtime"
       ],
-      "stability": "stable",
+      "stability": "experimental",
       "documentation": "docs/packages.md",
       "evidence": [
         "workspace-typecheck",

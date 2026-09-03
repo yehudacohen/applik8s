@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { app, applicationGraphFor, EventLog, event, IdentityProvider, Observability } from '@applik8s/applik8s';
-import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
+import { bindApplicationCallableDependencies } from '@applik8s/applik8s/provider-extension-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';

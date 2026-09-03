@@ -1,63 +1,28 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-16",
-  "scope": "Nested production dependency graph of all publishable @applik8s/* packages",
+  "reviewedAt": "2026-09-03",
+  "scope": "Frozen bun.lock production closure of every publishable @applik8s/* package, including required peers and installed optional dependencies",
   "advisories": {
-    "GHSA-pw8r-6689-xvf4": {
-      "dependency": "angular-expressions",
-      "severity": "critical",
-      "path": "typekro",
-      "disposition": "Upgrade TypeKro to a release using angular-expressions >=1.5.2; never evaluate untrusted expressions during builds.",
-      "expires": "2026-08-31"
-    },
     "GHSA-mp2f-45pm-3cg9": {
       "dependency": "decompress",
       "severity": "critical",
       "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
       "disposition": "No patched ComponentizeJS release exists; compile only trusted source in an isolated build environment and track the upstream archive dependency.",
-      "expires": "2026-08-31"
+      "expires": "2026-09-17"
     },
     "GHSA-h39j-r5qq-r9mm": {
       "dependency": "decompress",
       "severity": "moderate",
       "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
       "disposition": "No patched decompress, weval, or ComponentizeJS release exists. Weval downloads only its fixed Bytecode Alliance release asset, but the archive is not integrity-pinned; keep compiler builds isolated, never accept an untrusted archive source, and replace this dependency path when upstream publishes a fix.",
-      "expires": "2026-08-31"
+      "expires": "2026-09-17"
     },
     "GHSA-jwp9-9v96-94mx": {
       "dependency": "decompress",
       "severity": "moderate",
       "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
       "disposition": "No patched decompress, weval, or ComponentizeJS release exists. The affected archive extraction remains confined to isolated trusted compiler builds over Bytecode Alliance's fixed upstream asset; do not accept attacker-selected archives and replace the dependency path when upstream publishes a fix.",
-      "expires": "2026-08-31"
-    },
-    "GHSA-5p4m-2wfm-xmqj": {
-      "dependency": "js-yaml",
-      "severity": "high",
-      "path": "typekro",
-      "disposition": "TypeKro 0.33.7 pins js-yaml 4.3.0 while the ordered-map CPU fix first appears in 4.3.1. TypeKro remains a trusted build-time dependency and Applik8s must not compile attacker-controlled YAML; upgrade immediately when TypeKro publishes the patched pin.",
-      "expires": "2026-08-31"
-    },
-    "GHSA-r5fr-rjxr-66jc": {
-      "dependency": "lodash-es",
-      "severity": "high",
-      "path": "typekro > cel-js > chevrotain",
-      "disposition": "Move the CEL parser chain to patched Chevrotain/Lodash releases; do not compile untrusted CEL templates meanwhile.",
-      "expires": "2026-08-31"
-    },
-    "GHSA-f23m-r3pf-42rh": {
-      "dependency": "lodash-es",
-      "severity": "moderate",
-      "path": "typekro > cel-js > chevrotain",
-      "disposition": "Move the CEL parser chain to patched Chevrotain/Lodash releases.",
-      "expires": "2026-08-31"
-    },
-    "GHSA-xxjr-mmjv-4gpg": {
-      "dependency": "lodash-es",
-      "severity": "moderate",
-      "path": "typekro > cel-js > chevrotain",
-      "disposition": "Move the CEL parser chain to patched Chevrotain/Lodash releases.",
-      "expires": "2026-08-31"
+      "expires": "2026-09-17"
     }
   }
 }

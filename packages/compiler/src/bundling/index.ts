@@ -215,7 +215,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime/signed-envelope', resolve(workspaceRoot, 'packages/runtime/src/signed-envelope.ts')],
     ['@applik8s/runtime/node-integrity', resolve(workspaceRoot, 'packages/runtime/src/node-integrity.ts')],
     ['@applik8s/applik8s', resolve(workspaceRoot, 'packages/applik8s/src/index.ts')],
-    ['@applik8s/applik8s/internal/historical-model-commands', resolve(workspaceRoot, 'packages/applik8s/src/historical-model-commands.ts')],
+    ['@applik8s/applik8s/legacy-model-command-runtime', resolve(workspaceRoot, 'packages/applik8s/src/historical-model-commands.ts')],
     ['@applik8s/applik8s/processor-runtime', resolve(workspaceRoot, 'packages/applik8s/src/processor-runtime.ts')],
     ['@applik8s/applik8s/event-log-runtime', resolve(workspaceRoot, 'packages/applik8s/src/event-log-runtime.ts')],
     ['@applik8s/applik8s/provider-telemetry-runtime', resolve(workspaceRoot, 'packages/applik8s/src/application-provider-telemetry-runtime.ts')],

@@ -7,7 +7,7 @@ import { type ApplicationDurableStatusOwnershipContract, type ApplicationProvide
 import * as k8s from '@kubernetes/client-node';
 // Historical-character-fixture exception: v0.4 evidence intentionally uses
 // the compiler's retained lowering seam without restoring it to the root API.
-import { applicationModelCommandRegistrar } from '@applik8s/applik8s/internal/historical-model-commands';
+import { applicationModelCommandRegistrar } from '@applik8s/applik8s/legacy-model-command-runtime';
 
 export interface TenantPlatformExampleOptions {
   readonly apiGroup?: string;

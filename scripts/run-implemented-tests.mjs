@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 // Compiler integration files deliberately exercise full ComponentizeJS and TypeKro pipelines. Keep
 // each release-gate process small and sequential so those suites cannot accumulate near Node's heap
 // ceiling merely because they happened to hash into the same concurrent shard.
-const shards = boundedInteger(process.env.APPLIK8S_TEST_SHARDS, 16, 'APPLIK8S_TEST_SHARDS');
+const shards = boundedInteger(process.env.APPLIK8S_TEST_SHARDS, 32, 'APPLIK8S_TEST_SHARDS');
 const workers = boundedInteger(process.env.APPLIK8S_TEST_MAX_WORKERS, 1, 'APPLIK8S_TEST_MAX_WORKERS');
 const startShard = boundedInteger(
   process.env.APPLIK8S_TEST_START_SHARD,
@@ -31,6 +31,7 @@ for (let shard = startShard; shard <= shards; shard += 1) {
     `--maxWorkers=${workers}`,
     '--exclude=packages/compiler/test/application-workflows.vertical.test.ts',
     '--exclude=packages/compiler/test/compiler-artifacts.vertical.test.ts',
+    '--exclude=packages/compiler/test/application-reactive.vertical.test.ts',
     '--passWithNoTests',
   ]);
   if (code !== 0) process.exit(code);
@@ -40,6 +41,11 @@ const compilerArtifactCode = await run(process.execPath, [
   resolve('scripts/run-compiler-artifact-tests.mjs'),
 ]);
 if (compilerArtifactCode !== 0) process.exit(compilerArtifactCode);
+
+const reactiveCompilerCode = await run(process.execPath, [
+  resolve('scripts/run-reactive-compiler-tests.mjs'),
+]);
+if (reactiveCompilerCode !== 0) process.exit(reactiveCompilerCode);
 
 const workflowCompilerCode = await run(process.execPath, [
   resolve('scripts/run-workflow-compiler-tests.mjs'),

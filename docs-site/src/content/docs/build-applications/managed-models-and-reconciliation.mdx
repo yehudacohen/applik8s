@@ -1,0 +1,83 @@
+---
+title: Managed models and reconciliation
+description: Use one model-facing reconciliation experience across relational and Kubernetes-backed state without inventing a second controller API.
+---
+
+A managed model has authoritative state, observed status, and a callback that converges the two. The public
+surface is always `Model.on.reconcile(...)`; there is no application-level `app.reconcile` alias.
+
+## Kubernetes-backed models
+
+```ts
+const Workspace = application.crd('Workspace', {
+  apiVersion: 'workspaces.example/v1alpha1',
+  spec: type({ version: 'string' }),
+  status: type({ phase: "'Pending' | 'Ready'" }),
+});
+
+application.provide(
+  Workspace.store,
+  ManagedModelStore.kubernetes({ cluster: KubernetesCluster.current() }),
+);
+application.provide(
+  OperatorRuntime,
+  OperatorRuntime.kubernetes({ cluster: KubernetesCluster.current() }),
+);
+
+Workspace.on.reconcile(async (workspace, context) => {
+  await workspace.status.update({ phase: 'Ready' });
+  await workspace.conditions.set({
+    type: 'Ready',
+    status: 'True',
+    reason: 'Converged',
+    message: 'Workspace is ready.',
+  });
+  return context.requeueAfter('5m');
+});
+```
+
+The framework owns admission, finalizer registration, observed-generation conventions, status field
+management, retries, and runtime placement. The callback owns domain convergence.
+
+## Relational managed models
+
+Relational models use the same model-facing vocabulary. A qualified `ManagedModelStore` records desired
+state, status, conditions, revision, leases, and retry state in the selected transactional authority.
+Application code should not branch on whether the model is stored in PostgreSQL or represented by a CRD.
+
+```ts
+const Workspace = application
+  .model(workspaces, { name: 'Workspace', database: Database })
+  .managed({
+    status: type({ phase: "'Pending' | 'Ready'", endpoint: 'string?' }),
+    initialStatus: { phase: 'Pending' },
+  });
+
+Workspace.on.reconcile(async workspace => {
+  const endpoint = await ProvisionWorkspace({ workspaceId: workspace.id });
+  await workspace.status.update({ phase: 'Ready', endpoint });
+});
+```
+
+## Lifecycle and ownership
+
+- `Model.on.create`, `.on.update`, and `.on.delete` react to committed lifecycle facts.
+- `Model.on.reconcile` continuously converges desired and observed state.
+- `Model.on.finalize` declares cleanup that must complete before resource deletion.
+- UID, revision, and generation preconditions prevent a stale worker from mutating a replacement identity.
+- Conditions and domain status share one framework-defined ownership strategy rather than competing field
+  managers.
+
+For Kubernetes resources, declare secondary watches and permissions next to the model or handler. The
+compiler lowers cluster-scoped and namespaced permissions correctly and keeps the same bounded read API in
+the handler.
+
+## Recovery contract
+
+Reconciliation is at least once. A lease fences stale workers; status updates use the current authoritative
+revision; retry timing is durable; and a fresh worker reconstructs work from model state rather than an
+in-memory subscription. Effects that cross an external commit boundary still require an idempotent operation,
+outbox, task, workflow, or Saga receipt.
+
+Use an event handler when you need one reaction to a committed fact. Use reconciliation when the framework
+must keep proving that observed state matches desired state.

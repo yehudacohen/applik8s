@@ -10,7 +10,7 @@ import {
   bindApplicationCallableDependencies,
   bindApplicationProviderDependencies,
   bindApplicationProviderOperation,
-} from '@applik8s/applik8s/internal/provider-runtime';
+} from '@applik8s/applik8s/provider-extension-runtime';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
   applicationPaymentProviderRuntime,

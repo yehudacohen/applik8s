@@ -7,3 +7,66 @@ An agent receives only the tools authorized by its application identity and exec
 specialists use workflows or jobs; interactive assistants stream through the application gateway. Model
 writes retain causal principal lineage. Agentic Start demonstrates documents, conversations, knowledge,
 reviews, evaluations, budgets, billing, and operator evidence without exposing provider SDKs to domain code.
+
+## Define models and tools separately
+
+An AI model describes capabilities and provider requirements. An agent composes that model with typed
+application operations. Tools remain ordinary authorized callables; the agent does not receive ambient
+database, cluster, or filesystem access.
+
+```ts
+import { inference } from './providers';
+
+const AssistantModel = AI.model('assistant', {
+  inference,
+  capabilities: [AI.chat, AI.tools, AI.streaming],
+  constraints: { latencyClass: 'interactive', availabilityClass: 'high' },
+});
+
+const WorkspaceAssistant = application.agent('workspace-assistant.v1', {
+  identity: application.serviceIdentity('workspace-assistant'),
+  model: AssistantModel,
+  instructions: 'Answer from authorized workspace evidence and request review before changing a document.',
+  tools: [SearchDocuments, CreateDraft, RequestReview],
+  budgets: { timeoutMs: 120_000 },
+}, async (request, context) => chat({
+  adapter: context.tanstack.adapter,
+  messages: request.messages,
+  threadId: request.threadId,
+  runId: context.runId,
+  tools: context.tanstack.tools,
+  context: context.tanstack.execution,
+}));
+```
+
+Provider credentials stay server-side. The application graph records capability requirements and secret
+references, not key values.
+
+## Durable specialists
+
+Use a Job when a specialist can retry as a finite whole attempt. Use a workflow when it must suspend for a
+human decision, resume across process replacement, or coordinate durable steps. The original human remains
+the causal principal while generated workers and nested agents use scoped execution principals.
+
+Research agents persist append-only evidence with source, retrieval time, content digest, citation spans,
+and artifact linkage. Code agents receive fenced workspace, repository, process, and harness capabilities;
+changes remain proposals until the product's approval boundary admits them.
+
+## Signals and reviews
+
+Workflow signals are typed, one-shot, serializable capabilities. Issuance is an application event, so an
+authorized consumer may receive it through SSE or an event handler. Client input never supplies the trusted
+actor identity; the framework derives the principal and authorization receipt when an action resolves.
+
+## Production checklist
+
+- Give each agent a service identity and the smallest explicit tool set.
+- Bind budgets for turns, input, output, time, and cost.
+- Persist evidence and model/provider receipts outside conversational prose.
+- Redact credentials and sensitive model inputs from telemetry.
+- Use evaluations to pin expected behavior before changing prompts, models, or tools.
+- Require durable review for high-impact operations and preserve causal lineage through nested execution.
+
+Agentic Start is a maintained product fixture, not the only permitted UI or framework. The underlying model,
+operation, workflow, event, identity, and provider contracts are usable from any supported server and Vite
+application integration.

@@ -1,0 +1,86 @@
+---
+title: Typed ML models
+description: Invoke predictive models as provider-neutral typed functions with artifact provenance, receipts, and bounded batch behavior.
+---
+
+`ML.model(...)` describes a logical predictive model. Application profiles bind it to a qualified provider;
+domain code calls the model directly and receives a typed output plus provenance receipt.
+
+```ts
+import { ML } from '@applik8s/ml';
+
+const RiskScore = ML.model(
+  'risk-score.v1',
+  {
+    input: type({ accountAgeDays: 'number.integer >= 0', amount: 'number >= 0' }),
+    output: type({ score: '0 <= number <= 1', version: 'string' }),
+  },
+  {
+    capabilities: [ML.predict, ML.batchPrediction],
+    requirements: {
+      deterministic: true,
+      locality: 'local',
+      maximumBatchSize: 8,
+    },
+  },
+);
+
+application.provide(
+  RiskScore,
+  ML.deterministic({
+    artifact: ML.artifact({
+      digest: 'sha256:…',
+      format: 'onnx',
+      mediaType: 'application/onnx',
+      modelVersion: '2026-09-01',
+    }),
+  }),
+);
+
+const prediction = await RiskScore({ accountAgeDays: 45, amount: 120 });
+console.log(prediction.output.score);
+console.log(prediction.receipt.artifactDigest);
+```
+
+Input and output are validated at the provider boundary. Receipts identify the logical model, immutable
+artifact digest, model version, provider, timing, and redaction policy without copying sensitive features
+into logs by default.
+
+## Batches
+
+```ts
+const result = await RiskScore.batch(inputs, { partialFailure: 'collect' });
+
+for (const item of result.items) {
+  if (item.status === 'succeeded') consume(item.output);
+  else report(item.failure);
+}
+```
+
+`partialFailure: 'collect'` preserves every input position. Use `'fail'` when any failed item should reject
+the complete call. The logical model's maximum batch size and provider capability are checked before
+execution.
+
+## Provider selection
+
+Requirements are semantic, not provider names: deterministic execution, locality, supported operations,
+maximum batch size, and artifact format. Profiles may choose a local deterministic implementation for tests,
+a packaged runtime, or an external inference endpoint. An incompatible provider fails during application
+assembly or planning rather than silently changing the contract.
+
+## When to use this instead of an AI model
+
+Use `ML.model` for a versioned predictive artifact with a stable typed input/output contract. Use an AI model
+or agent for generative text, tools, streaming, and conversational execution. If a batch prediction is long
+running, invoke the model from a Job or `Query.onBatch` handler so progress, retry, and cancellation have an
+explicit durable owner.
+
+Never embed artifact bytes or provider credentials in the application graph. Reference content by digest and
+bind credentials through the selected provider's secret contract.
+
+## Artifact promotion and rollback
+
+Treat the artifact digest as the executable model identity. Promoting a new model means changing the bound
+artifact and producing receipts against the new digest; rolling back restores the prior binding without
+changing the logical `RiskScore` contract. If the new artifact changes input or output meaning, publish a new
+logical model version instead of hiding that change behind the old handle.

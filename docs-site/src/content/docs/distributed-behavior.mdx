@@ -8,3 +8,48 @@ append-only effect/compensation receipt chain. Actors provide addressable concur
 recovery. Schedules select an execution family; they do not create a sixth execution model.
 
 Every provider page states which guarantees are native, emulated, preview, or unavailable.
+
+## The boundary is recovery, not duration
+
+An ordinary async function can run for a long time, but its caller owns its lifetime. A Job gives finite work
+a durable run and terminal result. A workflow records authored checkpoints and can suspend. A Saga records
+the compensation frontier across independently committed systems. An actor serializes access to one
+addressable state identity.
+
+```ts
+const result = await RebuildSearch({ workspaceId });
+const run = await RebuildSearch.start({ workspaceId });
+
+const approval = await PublishDocument.start({ documentId });
+
+const room = ChatRoom.get(roomId);
+await room.post({ body: 'hello' });
+```
+
+Direct invocation remains function-native. The handle carries execution metadata, authority, and provider
+requirements without asking call sites to use a generic `invoke` API.
+
+## Scheduling does not change the execution family
+
+Schedules admit a job, workflow, operation, or handler at a time. They converge desired schedule state and
+record occurrence identity, overlap policy, misfire behavior, and admission receipts. They do not turn all
+scheduled code into a new generic task type.
+
+```ts
+application.schedule('search.rebuild.nightly.v1', {
+  cron: '0 2 * * *',
+  run: () => RebuildSearch.start({ workspaceId: 'all' }),
+});
+```
+
+Dynamic schedules retain their own durable revision. Updating a schedule converges the provider definition;
+it does not duplicate already-admitted occurrences.
+
+## Provider honesty
+
+Local, Kubernetes, Hatchet, AWS, and actor providers expose different native guarantees. The application
+plan records whether interruption recovery, cancellation, signals, timers, concurrency, and placement are
+native, emulated, or unavailable. A profile cannot satisfy a stronger requirement with a weaker provider.
+
+Read [Jobs, workflows, and Sagas](./build-applications/jobs-workflows-sagas/) for complete examples and
+[Choose the right primitive](./build-applications/decision-guide/) for the decision matrix.

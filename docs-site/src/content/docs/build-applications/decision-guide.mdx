@@ -20,3 +20,40 @@ addressable stateful concurrency.
 
 If two rows seem plausible, choose the least durable primitive whose failure semantics satisfy the product.
 Use `applik8s explain` to see the selected implementation before deployment.
+
+## A practical decision sequence
+
+1. **Is this authoritative domain state?** Declare a relational or Kubernetes model.
+2. **Do you only need an answer now?** Use a query. Do not create a projection merely to avoid a join.
+3. **Must the answer stay materialized and react to committed facts?** Use a projection or view.
+4. **Is the work finite and safe to retry as a whole attempt?** Use a job.
+5. **Must execution wait, signal, sleep, or resume between authored steps?** Use a workflow.
+6. **Does one operation cross several independently committed systems?** Use a Saga and name the
+   compensation or unknown-outcome rule for every step.
+7. **Does state need one address and serialized concurrent access?** Use an actor.
+8. **Is this continuous convergence of one Kubernetes resource?** Use `Resource.on.reconcile(...)`.
+
+## Similar-looking choices
+
+| If you are choosing between… | Prefer… | Because… |
+| --- | --- | --- |
+| Job and workflow | Job | when the entire finite attempt can restart safely |
+| Job and workflow | Workflow | when authored checkpoints, waits, or signals must survive |
+| Query batch and stream batch | `Query.onBatch` | when membership is finite and needs a stable ordered frontier |
+| Query batch and stream batch | `Stream.onBatch` | when input is an unbounded acknowledged event source |
+| Event handler and projection | Event handler | for effects such as notification or external publication |
+| Event handler and projection | Projection | for a rebuildable read model with declared retention |
+| Reconciler and event handler | Reconciler | for continuously converging desired and observed resource state |
+| Saga and workflow | Saga | when compensation and unknown commit outcomes are the central contract |
+
+## Failure semantics are part of the API
+
+An ordinary async function is still the right default for immediate in-process work. Promote it only when
+the failure boundary demands a framework primitive. Jobs expose terminal results and attempts; workflows
+expose durable history; stream batches expose acknowledgement; Sagas expose compensation receipts; and
+reconcilers expose observed-generation convergence. Those contracts are not interchangeable deployment
+options.
+
+Profiles choose implementations after the semantic requirement is known. If a selected provider cannot
+meet the required consistency, durability, authority, or lifecycle guarantee, planning fails rather than
+silently weakening the primitive.

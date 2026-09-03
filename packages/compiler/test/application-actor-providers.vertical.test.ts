@@ -222,7 +222,7 @@ export const actorProviderStack = application.composition;
     expect(gatewaySource).toContain('"interface":"AcquisitionProvider"');
     expect(gatewaySource).toContain('"member":"acquire"');
     expect(generatedFiles).not.toContain(
-      '@applik8s/applik8s/internal/provider-runtime',
+      '@applik8s/applik8s/provider-extension-runtime',
     );
     expect(generatedFiles).not.toContain('application.inject');
     expect(generatedFiles).not.toContain('application.profile');

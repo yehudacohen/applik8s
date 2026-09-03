@@ -7,3 +7,57 @@ Applik8s distinguishes transactional authority, event logs, projections/indexes,
 models, and lakehouse datasets. A model or query remains the application-facing handle; profiles select
 PostgreSQL, Kubernetes, ClickHouse, DuckDB, S3, or another qualified implementation. Cross-store work must
 declare consistency, replay, batching, retention, and deletion semantics rather than assuming one transaction.
+
+## Match authority to workload
+
+| Need | Logical capability | Typical qualified providers |
+| --- | --- | --- |
+| authoritative transactions and model revisions | `TransactionalDatabase` | PostgreSQL |
+| ordered durable application facts | `EventLog` | NATS JetStream, Kinesis |
+| low-latency partitioned read models | `IndexStore` | Valkey |
+| append-oriented analytical projections | `AnalyticalDatabase` | ClickHouse |
+| immutable blobs and generated artifacts | `ObjectStorage` | S3-compatible storage |
+| durable analytical history | `LakehouseDataset` and `LakehouseQuery` | S3, Glue, Athena, DuckDB |
+
+Applications name the semantic role. Profiles select implementations and planning proves required guarantees.
+
+## One model vocabulary
+
+A promoted model carries its schema, relationships, query facet, provider requirements, and generated
+runtime metadata. Call sites do not switch between a Kubernetes client, Drizzle row, or analytical SDK just
+because placement changed.
+
+```ts
+const Post = application.model(posts, { name: 'Post', database });
+
+await Post.create({ id, authorId, body, state: 'draft' });
+
+const PublishedPosts = Post.query(
+  { input: type({ authorId: 'string' }), output: Post.schema.select.array() },
+  (input, context) => context
+    .select(Post)
+    .where(post => post.authorId.eq(input.authorId))
+    .orderBy(post => post.publishedAt.desc()),
+);
+```
+
+Relationships remain model metadata and can inform typed joins, invalidation, and authorization. A query is
+one bounded current answer. A view is persisted and live. A projection is a pure transformation maintained
+from committed facts.
+
+## Historical data and destructive authority
+
+Lakehouse publication uses content-addressed manifests, partition identity, schema compatibility, and
+commit receipts. Destructive S3 object or Glue table cleanup is denied by default. It is permitted only for
+resources created by the owning test/deployment or when an explicit client force-delete contract identifies
+the exact owned dataset. Neighboring prefixes, buckets, databases, and tables are never inferred cleanup
+targets.
+
+## Cross-store consistency
+
+Do not imply a transaction across PostgreSQL, an event broker, an index, and ClickHouse. Commit authoritative
+state and its outbox in one local transaction; publish idempotently; checkpoint consumers after their effects
+are durable; and rebuild projections from an authoritative snapshot or retained event history. The
+implementation plan exposes each authority and recovery boundary.
+
+For finite scans see [Batch and stream processing](./build-applications/batch-and-stream-processing/).

@@ -1,5 +1,9 @@
 // typecast-file-boundary: checked-in release manifests are untrusted JSON until this gate validates their complete shape.
 import { access, readFile } from 'node:fs/promises';
+import {
+  v09EvidencePath,
+  v09ReleaseEvidenceContract,
+} from './v09-release-evidence-contract';
 
 interface Gate {
   readonly id: string;
@@ -8,6 +12,7 @@ interface Gate {
   readonly command: string;
   readonly blocker?: string;
   readonly releaseBlocking?: boolean;
+  readonly receipt?: string;
   readonly evidence: readonly string[];
 }
 
@@ -37,6 +42,22 @@ const publicContractInventory = JSON.parse(
   await readFile('docs/v0.9-public-contract.json', 'utf8'),
 ) as { readonly status?: 'candidate-review-ready' | 'frozen' };
 const findings: string[] = [];
+const liveReceiptGateIds = new Set([
+  'released-v071-upgrade',
+  'managed-model-matrix',
+  'saga-deployed-provider',
+  'query-batching',
+  'finite-jobs',
+  'kubernetes-cluster-capability',
+  'research-agent-managed',
+  'research-agent-external',
+  'code-agent-local',
+  'builder-opencode',
+  'chirp-production-aws',
+  'chirp-production-kubernetes',
+  'agentic-start-browser',
+  'clean-context-review',
+]);
 
 if (scorecard.schemaVersion !== 1 || scorecard.release !== '0.9.0') findings.push('V09_SCORECARD_IDENTITY_INVALID');
 if (acceptance.schemaVersion !== 1 || acceptance.release !== '0.9.0') findings.push('V09_ACCEPTANCE_IDENTITY_INVALID');
@@ -52,6 +73,14 @@ for (const gate of acceptance.gates) {
   const script = /^bun run ([A-Za-z0-9:_-]+)$/u.exec(gate.command)?.[1];
   if (!script || !packageManifest.scripts?.[script]) findings.push(`V09_ACCEPTANCE_COMMAND_MISSING:${gate.id}:${gate.command}`);
   if (gate.evidence.length === 0) findings.push(`V09_ACCEPTANCE_EVIDENCE_MISSING:${gate.id}`);
+  if (liveReceiptGateIds.has(gate.id) && !gate.receipt) {
+    findings.push(`V09_ACCEPTANCE_RECEIPT_MISSING:${gate.id}`);
+  }
+  if (gate.receipt && !v09ReleaseEvidenceContract[gate.receipt]) {
+    findings.push(`V09_ACCEPTANCE_RECEIPT_UNKNOWN:${gate.id}:${gate.receipt}`);
+  } else if (gate.receipt && !gate.evidence.includes(v09EvidencePath(gate.receipt))) {
+    findings.push(`V09_ACCEPTANCE_RECEIPT_PATH_MISSING:${gate.id}:${v09EvidencePath(gate.receipt)}`);
+  }
   if ((gate.status === 'blocked' || gate.status === 'missing') && !gate.blocker?.match(/^[A-Z][A-Z0-9_]+$/u)) {
     findings.push(`V09_ACCEPTANCE_BLOCKER_MISSING:${gate.id}`);
   }

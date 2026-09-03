@@ -1022,7 +1022,7 @@ export const workflowModelEdit = platform.composition;
       expect(generatedSource).not.toContain('application.profile');
       expect(generatedSource).not.toContain('application.provide');
       expect(generatedSource).not.toContain(
-        '@applik8s/applik8s/internal/provider-runtime',
+        '@applik8s/applik8s/provider-extension-runtime',
       );
       expect(source).toContain('runtime:');
 

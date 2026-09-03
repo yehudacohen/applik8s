@@ -10,7 +10,7 @@ import {
 import {
   applicationQualifiedProviderRef,
   registerApplicationGraphExtension,
-} from '@applik8s/applik8s/internal/application-graph-extension';
+} from '@applik8s/applik8s/graph-extension-runtime';
 import type { ApplicationAIModelDefinition } from '@applik8s/ai';
 import {
   createApplicationRuntimeOperation,

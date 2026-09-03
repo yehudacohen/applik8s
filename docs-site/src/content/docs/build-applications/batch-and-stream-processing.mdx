@@ -1,0 +1,107 @@
+---
+title: Batch and stream processing
+description: Process finite query membership or unbounded event delivery without hiding their different consistency contracts.
+---
+
+Applik8s offers two callback-native batch surfaces. `Query.onBatch(...)` turns one finite ordered query into
+a restartable job. `Stream.onBatch(...)` consumes an unbounded source with acknowledgement and checkpoint
+semantics. They look similar because handlers receive bounded typed batches; they are not aliases.
+
+## Batch a finite query
+
+Define the query once, including authorization, predicate, and deterministic order. `onBatch` reuses that
+definition and returns a job handle.
+
+```ts
+const DocumentsForWorkspace = Document.query(
+  {
+    input: type({ workspaceId: 'string' }),
+    output: Document.schema.select.array(),
+    database: Database,
+    authorize: ({ principal, input }) =>
+      DocumentsPolicy.canRead(principal, input.workspaceId),
+  },
+  (input, context) =>
+    context
+      .select(Document)
+      .where(document => document.workspaceId.eq(input.workspaceId))
+      .orderBy(document => [document.createdAt.asc(), document.id.asc()]),
+);
+
+const ReindexWorkspace = DocumentsForWorkspace.onBatch(
+  {
+    batch: { maxItems: 250 },
+    concurrency: 8,
+    consistency: QueryConsistency.monotonicFrontier,
+    retries: 3,
+    timeout: '30m',
+    resources: { cpu: '2', memory: '4Gi' },
+  },
+  async batch => {
+    await SearchIndex.replace(batch.items);
+  },
+);
+
+const run = await ReindexWorkspace.start({ workspaceId });
+```
+
+The provider owns physical cursors. Application code receives a typed window and a stable batch identity.
+The committed frontier advances only through the longest contiguous prefix of receipted windows.
+
+Choose consistency deliberately:
+
+| Consistency | Use when | Important limitation |
+| --- | --- | --- |
+| repeatable snapshot | exact finite membership matters | provider must retain a resumable snapshot |
+| version pinned | rows expose a durable revision boundary | late mutations belong to a later run |
+| monotonic frontier | ordered additions are acceptable | updates behind the frontier require another run |
+| best effort | approximate maintenance is acceptable | requires explicit drift and idempotency acknowledgement |
+
+`onBatch` is available only for a portable ordered selection. An arbitrary query remains callable but does
+not become a resumable scan by accident.
+
+## Batch an unbounded stream
+
+Use `Stream.onBatch(...)` when events continue indefinitely and the runtime must acknowledge delivery.
+
+```ts
+const AccountChanges = application.stream(AccountChanged, {
+  database: Database,
+  retention: { maxAgeSeconds: 7 * 24 * 60 * 60 },
+  partitionBy: event => event.accountId,
+  authorize: () => true,
+});
+
+AccountChanges.onBatch(
+  {
+    batch: { maxItems: 500, maxBytes: '4MiB', maxWait: '1s' },
+    ordering: 'partition',
+    concurrency: 8,
+  },
+  async batch => {
+    await Analytics.append(batch.events.map(event => event.value));
+  },
+);
+```
+
+The runtime freezes batch membership before invoking the handler. Acknowledgement happens for the complete
+batch after declared effects and the durable checkpoint succeed. Delivery is at least once; use the frozen
+batch ID or application effect receipts for idempotent external effects.
+
+## Do not hand-roll pagination recovery
+
+A loop over pages does not define stable membership, deterministic ordering, resume after crash, or behavior
+under concurrent mutation. Use an ordinary query for a one-time response, `Query.onBatch` for finite managed
+work, `Stream.onBatch` for unbounded events, and projection rebuilds when authoritative state can recreate the
+read model purely.
+
+Planning reports the requested consistency, provider guarantee, batch budgets, concurrency, checkpoint
+authority, and any unsupported combination before deployment.
+
+## Failure and replay boundaries
+
+Retries preserve the frozen batch identity. A handler that reaches an unknown outcome is retried with that
+identity; it is never silently acknowledged. Keep non-idempotent work behind a receipt-bearing effect and
+make poison-event handling explicit in the selected stream provider. Finite query jobs retain their
+checkpoint until the run is completed or deliberately abandoned; stream consumers retain it according to
+the stream's delivery and retention contract.

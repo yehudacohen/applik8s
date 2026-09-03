@@ -12,3 +12,80 @@ Entry.on.create(async created => {
 Handlers acknowledge only after their declared effects and checkpoint are durable. Projections use the same
 callback-native shape with `output.upsert`, `output.append`, or `output.remove`; rebuilds must declare whether
 current authoritative state can reconstruct the live logical source or whether event replay is required.
+
+## Select events explicitly
+
+`application.events` is a typed logical catalog. It does not pretend that every source shares one physical
+broker, global order, retention window, or transaction.
+
+```ts
+application.events
+  .from(Order, Checkout, RebuildSearch)
+  .onEvent(async event => {
+    await AuditEntry.create({
+      eventId: event.id,
+      type: event.contract.id,
+      subject: event.subject,
+    });
+  });
+```
+
+- `from(...)` selects producer families such as models, jobs, or workflows.
+- `of(...)` selects exact versioned event handles.
+- `all()` is the only broad selection and should be reserved for deliberate cross-cutting behavior.
+
+```ts
+application.events
+  .of(Order.events.updated)
+  .where(event => event.detail.changed.has('status'))
+  .onEvent(recordOrderStatusChange);
+
+application.events.all().onEvent(recordApplicationFact);
+```
+
+Selection grants no observation authority. Every subscription is still admitted for its principal, trusted
+context, contract versions, and provider-visible scope.
+
+## Project a read model
+
+```ts
+PostPublished
+  .project(HomeTimeline, (event, output) => {
+    output.upsert({
+      partition: event.authorId,
+      key: event.postId,
+      score: Date.parse(event.publishedAt),
+      value: event,
+    });
+  })
+  .rebuildFrom(
+    Post.where(post => post.state.eq('published')),
+    (post, rebuild) => rebuild.source({
+      postId: post.id,
+      authorId: post.authorId,
+      body: post.body,
+      publishedAt: post.publishedAt,
+    }),
+  )
+  .retain({ maxItemsPerPartition: 1_000, maxAge: '30d' });
+```
+
+Projection callbacks are pure transformations over immutable event data and an output writer. They cannot
+invoke capability-bearing handles. Snapshot rebuild is valid only when current authoritative state can
+reconstruct the same logical source; irrecoverable historical information requires event replay.
+
+## Delivery and effects
+
+An event handler may call authorized application operations. External effects must use an outbox, task,
+workflow, Saga, or another receipt-bearing boundary when duplicate delivery would be unsafe. Stream delivery
+is at least once; source-local positions and causal identity remain canonical, and Applik8s does not invent a
+global total order across independent providers.
+
+For bounded batches, see [Batch and stream processing](./build-applications/batch-and-stream-processing/).
+
+## Reconciliation is not event replay
+
+Use `Model.on.reconcile(...)` when desired state must continuously converge with an external system. Use an
+event handler when a committed fact should trigger work, and use a projection when that fact deterministically
+updates a read model. Reconciliation may run again without a new event, so its effects must be idempotent and
+its status must describe observed convergence rather than delivery progress.

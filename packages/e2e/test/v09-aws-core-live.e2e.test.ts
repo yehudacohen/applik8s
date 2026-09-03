@@ -86,7 +86,6 @@ live('v0.9 real AWS bounded serverless lifecycle', () => {
     } as const;
     const stateRoot = resolve(`.applik8s-tmp/aws-qualification/${runId}`);
     await mkdir(stateRoot, { recursive: true });
-    temporaryPaths.push(stateRoot);
     let activePlan = initialPlan;
     let deployment = createApplicationAwsDeployment({
       plan: activePlan,
@@ -148,12 +147,20 @@ live('v0.9 real AWS bounded serverless lifecycle', () => {
       expect(await queueVisibility(queueUrl, region)).toBe('180');
       assertions.push({ assertion: 'desired-update', test: 'public deployment updated the exact queue visibility contract' });
 
-      await aws(['sqs', 'set-queue-attributes', '--queue-url', queueUrl, '--attributes', JSON.stringify({ VisibilityTimeout: '41' })], region);
-      expect((await deployment.plan()).changes.some(({ action }) => action === 'update')).toBe(true);
+      // Exercise a provider-supported, narrowly scoped drift class without
+      // inventing a second lifecycle implementation in Applik8s. The native
+      // S3 provider owns the full tag set and rewrites it during forced apply.
+      const driftedBucketTags = await resourceTags('s3', bucket, region);
+      delete driftedBucketTags.Purpose;
+      await aws([
+        's3api', 'put-bucket-tagging', '--bucket', bucket, '--tagging',
+        JSON.stringify({ TagSet: Object.entries(driftedBucketTags).map(([Key, Value]) => ({ Key, Value })) }),
+      ], region);
+      expect((await resourceTags('s3', bucket, region)).Purpose).toBeUndefined();
       await deployment.apply();
-      expect(await queueVisibility(queueUrl, region)).toBe('180');
+      expect(await resourceTags('s3', bucket, region)).toMatchObject(requiredTags);
       expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
-      assertions.push({ assertion: 'drift-repair', test: 'out-of-band drift on the exact test queue was detected and repaired' });
+      assertions.push({ assertion: 'drift-repair', test: 'public deployment repaired an externally removed ownership tag on the exact run-owned bucket' });
 
       inventory = [
         { type: 'AWS.S3.Bucket', name: bucket, arn: `arn:aws:s3:::${bucket}` },
@@ -172,10 +179,11 @@ live('v0.9 real AWS bounded serverless lifecycle', () => {
 
       const completedAt = new Date().toISOString();
       await writeV06EvidenceReceipt(evidencePath, {
-        suite: 'v0.9-aws-core-smoke',
+        suite: 'aws-core-smoke',
         run: { id: runId, startedAt: startedAt.toISOString(), completedAt },
         candidate: { git: await collectV06GitIdentity(process.cwd(), { exclude: ['.applik8s-tmp/'] }) },
         environment: {
+          kind: 'aws',
           accountId,
           callerArn: expectedArn,
           region,
@@ -185,11 +193,21 @@ live('v0.9 real AWS bounded serverless lifecycle', () => {
           expiresAt,
           maxEstimatedCostUsd: 1,
         },
-        assertionEvidence: createV06AssertionEvidence(assertions, runId),
+        assertionEvidence: createV06AssertionEvidence(
+          assertions.map(assertion => ({ ...assertion, observedAt: completedAt })),
+          runId,
+        ),
         inventory,
         teardown: { authority: 'createApplicationAwsDeployment.destroy', complete: true },
-        scope: { implemented: ['ObjectStorage/S3', 'Queue/SQS', 'EventLog/Kinesis'], notTested: ['full Chirp AWS production topology'] },
+        scope: {
+          implemented: ['ObjectStorage/S3', 'Queue/SQS', 'EventLog/Kinesis'],
+          notTested: ['full Chirp AWS production topology', 'recovery after out-of-band deletion of a persisted AWS resource'],
+        },
       });
+      // Remove local state only after owner teardown, exact cloud absence, and
+      // durable evidence have all succeeded. A failed teardown deliberately
+      // leaves its state available for an exact-owner retry.
+      temporaryPaths.push(stateRoot);
     } finally {
       if (deploymentAttempted) {
         await deployment.destroy();

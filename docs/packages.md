@@ -19,6 +19,15 @@ provider, runtime, deployment, or tooling boundaries.
 | `@applik8s/dev` | Independent local development daemon, durable change journal, reviewed workspace mutation, revision-bound ApplicationPlan selection resolution, portal UI, coding-agent adapters, and version-matched skills. Public subpaths are `/server`, `/ui`, `/agent`, `/agent/opencode`, and `/skills`. |
 | `@applik8s/mcp` | Provider-neutral MCP catalog, transport, trust, and persistence contracts. |
 
+The umbrella root is the convenient pre-1.0 authoring entrypoint. Its documented common symbols—`app`, models,
+events, workflows, provider tokens, configuration, and application-graph discovery—and the `/dns`, `/drizzle`,
+`/dsl`, `/operator`, `/structured-generation`, and `/typekro` authoring subpaths are the reviewed 1.0 candidates.
+Everything else exported by the umbrella remains explicitly experimental until it receives an individual
+review or moves behind a focused package. First-party extension packages use the experimental
+`/graph-extension-runtime`, `/legacy-model-command-runtime`, `/managed-effect-runtime`, and
+`/provider-extension-runtime` subpaths; application authors should not depend on those seams. No public
+`/internal/*` entrypoint is part of the package contract.
+
 ## Web application integrations
 
 | Package | Use it for |

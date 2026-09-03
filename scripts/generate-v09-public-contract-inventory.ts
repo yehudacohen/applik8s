@@ -69,6 +69,8 @@ interface PublicContractOverride {
   readonly id: string;
   readonly package: string;
   readonly entrypoints: readonly string[];
+  /** Exact exported symbols. Prefer this for reviewed umbrella-root APIs. */
+  readonly symbols?: readonly string[];
   readonly symbolPrefixes?: readonly string[];
   readonly maturity: PublicContractMaturity;
   readonly stability: PublicContractStability;
@@ -142,10 +144,11 @@ const packages = manifests
         const overrides = contractOverrides.filter(candidate =>
           candidate.package === name && candidate.entrypoints.includes(entrypoint)
         );
-        const entrypointOverride = overrides.find(candidate => !candidate.symbolPrefixes);
+        const entrypointOverride = overrides.find(candidate => !candidate.symbolPrefixes && !candidate.symbols);
         const symbolContracts = symbols.flatMap(symbol => {
           const override = overrides.find(candidate =>
-            candidate.symbolPrefixes?.some(prefix => symbol.startsWith(prefix))
+            candidate.symbols?.includes(symbol)
+            || candidate.symbolPrefixes?.some(prefix => symbol.startsWith(prefix))
           );
           return override ? [{ name: symbol, contract: explicitOverrideContract(override) }] : [];
         });
@@ -178,9 +181,19 @@ for (const override of contractOverrides) {
       throw new Error(`PUBLIC_CONTRACT_OVERRIDE_SYMBOL_PREFIX_STALE:${override.id}:${prefix}`);
     }
   }
+  for (const symbol of override.symbols ?? []) {
+    if (!matchedEntrypoints.some(entrypoint => entrypoint.symbols.includes(symbol))) {
+      throw new Error(`PUBLIC_CONTRACT_OVERRIDE_SYMBOL_STALE:${override.id}:${symbol}`);
+    }
+  }
 }
 
 for (const entry of packages) {
+  for (const entrypoint of entry.entrypoints) {
+    if (entrypoint.name === './internal' || entrypoint.name.startsWith('./internal/')) {
+      throw new Error(`PUBLIC_CONTRACT_INTERNAL_ENTRYPOINT_EXPORTED:${entry.name}:${entrypoint.name}`);
+    }
+  }
   const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   if (!new RegExp(`^\\| ${'`'}${escaped}${'`'} \\|`, 'mu').test(packageCatalog)) {
     throw new Error(`docs/packages.md does not document ${entry.name}.`);
@@ -282,7 +295,9 @@ function validateContractOverrides(
       || !override.owner
       || override.evidence.length === 0
       || !override.reason.trim()
+      || override.symbols?.some(symbol => !symbol)
       || override.symbolPrefixes?.some(prefix => !prefix)
+      || (override.symbols !== undefined && override.symbolPrefixes !== undefined)
     ) {
       throw new Error(`PUBLIC_CONTRACT_OVERRIDE_INCOMPLETE:${override.id}`);
     }
