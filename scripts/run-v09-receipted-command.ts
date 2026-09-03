@@ -14,8 +14,8 @@ import {
   v09ReleaseEvidenceContract,
 } from './v09-release-evidence-contract';
 
-const [suite, ...command] = Bun.argv.slice(2);
-if (!suite || command.length === 0) {
+const [suite, delimiter, ...command] = Bun.argv.slice(2);
+if (!suite || delimiter !== '--' || command.length === 0) {
   throw new Error('Usage: bun scripts/run-v09-receipted-command.ts <suite> -- <command> [args...]');
 }
 const requiredAssertions = v09ReleaseEvidenceContract[suite];
