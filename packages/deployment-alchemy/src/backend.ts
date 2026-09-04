@@ -273,14 +273,20 @@ export function createApplicationAlchemyDeployment(
           );
         }
         for (const project of harborProjects) {
-          const resource = yield* ApplicationHarborProject(
+          const props = harborProjectProps(
+            project,
+            options.graph,
+            options.artifactRegistry,
+            namespaceHandles,
+          );
+          const declaration = ApplicationHarborProject(
             project.id,
-            harborProjectProps(
-              project,
-              options.graph,
-              options.artifactRegistry,
-              namespaceHandles,
-            ),
+            props,
+          );
+          const resource = yield* (
+            props.deletionPolicy === "delete"
+              ? destroyAlchemyResource()(declaration)
+              : retainAlchemyResource()(declaration)
           );
           // typecast: Alchemy resolves resource Outputs before returning from
           // typecast: deploy; the map is used only to create dependency inputs.
