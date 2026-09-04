@@ -1,6 +1,6 @@
 import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
 import { type FormEvent, useState } from 'react';
-import { Badge, Button, Card, EmptyState, Input, PageHeader, RouteState, Select } from '../../components/ui';
+import { Alert, Badge, Button, Card, EmptyState, Input, PageHeader, RouteState, Select } from '../../components/ui';
 import {
   DataLifecycleRequest,
   Invitation,
@@ -69,9 +69,7 @@ export function WorkspaceHome() {
   );
 }
 
-export function WorkspaceDashboardView(
-  { workspaceId }: { readonly workspaceId: string },
-) {
+export function WorkspaceDashboardView({ workspaceId }: { readonly workspaceId: string }) {
   const dashboard = WorkspaceDashboard({ workspaceId }).useQuery();
   const activity = WorkspaceActivitySnapshot({ workspaceId }).useQuery();
   const history = HistoricalUsage({ principalScope: workspaceId }).useQuery();
@@ -82,7 +80,8 @@ export function WorkspaceDashboardView(
   const requestLifecycle = DataLifecycleRequest.create.useMutation();
   const [email, setEmail] = useState('');
   const [invitationRole, setInvitationRole] = useState<'workspace-administrator' | 'workspace-member'>('workspace-member');
-  const [notice, setNotice] = useState<string>();
+  const [invitationLink, setInvitationLink] = useState<string>();
+  const [lifecycleNotice, setLifecycleNotice] = useState<string>();
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
 
   async function invite(event: FormEvent<HTMLFormElement>) {
@@ -97,9 +96,7 @@ export function WorkspaceDashboardView(
       expiresAt,
     });
     setEmail('');
-    setNotice(
-      `${globalThis.location.origin}/invitations/${invitation.value.id}`,
-    );
+    setInvitationLink(`${globalThis.location.origin}/invitations/${invitation.value.id}`);
   }
 
   async function requestWorkspaceDeletion() {
@@ -109,11 +106,11 @@ export function WorkspaceDashboardView(
       targetId: workspaceId,
     });
     setDeleteConfirmation('');
-    setNotice(`Workspace lifecycle request ${request.value.id} was admitted. Personal content and retained evidence are not silently deleted.`);
+    setLifecycleNotice(`Workspace lifecycle request ${request.value.id} was admitted. Personal content and retained evidence are not silently deleted.`);
   }
 
   if (dashboard.error) {
-    return <RouteState tone="warning" title="Workspace unavailable" description="The selector may be stale or the workspace provider may be recovering." />;
+    return <div className="space-y-4">{lifecycleNotice ? <Alert title="Workspace lifecycle request admitted" tone="success">{lifecycleNotice}</Alert> : null}<RouteState tone="warning" title="Workspace unavailable" description="The selected workspace may have completed deletion, the selector may be stale, or the workspace provider may be recovering." /></div>;
   }
   if (!dashboard.data) {
     return <RouteState title="Loading workspace" description="Membership is being validated before trusted context is admitted." />;
@@ -205,9 +202,9 @@ export function WorkspaceDashboardView(
             Invite member
           </Button>
         </form>
-        {notice ? (
+        {invitationLink ? (
           <p role="status">
-            Single-use invitation: <a href={notice}>{notice}</a>
+            Single-use invitation: <a href={invitationLink}>{invitationLink}</a>
           </p>
         ) : null}
       </Card></div>
@@ -217,6 +214,8 @@ export function WorkspaceDashboardView(
         <label className="mt-4 block text-sm font-semibold" htmlFor="workspace-delete-confirmation">Type {dashboard.data.workspace.name} to continue</label>
         <Input id="workspace-delete-confirmation" className="mt-2" value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.currentTarget.value)} />
         <Button className="mt-3" variant="danger" type="button" disabled={deleteConfirmation !== dashboard.data.workspace.name || requestLifecycle.pending} onClick={() => void requestWorkspaceDeletion()}>Request workspace deletion</Button>
+        {lifecycleNotice ? <div className="mt-4"><Alert title="Workspace lifecycle request admitted" tone="success">{lifecycleNotice}</Alert></div> : null}
+        {requestLifecycle.error ? <div className="mt-4"><Alert title="Workspace deletion could not start" tone="danger">Nothing was deleted. Review the error and try again.</Alert></div> : null}
       </Card> : null}
     </div>
   );

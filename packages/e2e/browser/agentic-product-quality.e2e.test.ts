@@ -81,6 +81,15 @@ test('keeps the representative product surface responsive and free of browser fa
         await page.waitForURL(url => url.pathname === '/app');
         admittedRedirect = true;
       }
+      if (publicAdmissionRoute && !admittedRedirect) {
+        await Promise.race([
+          page.waitForURL(url => url.pathname === '/app', { timeout: 15_000 }),
+          page.getByRole('heading', { level: 1, name: route.heading }).first().waitFor({
+            state: 'visible',
+            timeout: 15_000,
+          }),
+        ]);
+      }
       admittedRedirect ||= publicAdmissionRoute
         && new URL(page.url()).pathname === '/app';
       expect(
