@@ -2343,6 +2343,7 @@ const Card = cards.managed({
     expect(source).toContain('/__applik8s/v1');
     expect(source).toContain('APPLIK8S_KUBERNETES_QUERY_');
     expect(source).toContain('allowedNamespaces');
+    expect(generatedSource).toContain('...(localResourceClients ? {} : { inCluster: true })');
     expect(source).toContain('applik8s.task-query/v1alpha1');
     expect(generatedSource).toContain('verifyApplicationTaskQueryAdmission');
     expect(source).toContain('Applik8s Kubernetes query request failed');

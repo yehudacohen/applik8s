@@ -785,6 +785,7 @@ const localGateway =
 		authenticate && (queries.length > 0 || commands.length > 0)
 			? `createApplik8sKubernetesGateway({
   ...(localResourceClients ?? {}),
+  ...(localResourceClients ? {} : { inCluster: true }),
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   observeAdmission: observeRequestAdmission,
@@ -881,6 +882,7 @@ const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'ku
       namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
       admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
       authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
+      inCluster: true,
       serviceAccountName: ${JSON.stringify(scheduleHost?.serviceAccountName ?? kubernetesName(`${graph.metadata.name}-schedule-control`))},
       databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
       admissionRunner: scheduleAdmissionRunner,

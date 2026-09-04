@@ -914,7 +914,18 @@ async function runExplain(
     io.stdout(`How to fix: ${advice.howToFix}`);
     io.stdout(`Effects: ${advice.effects}`);
     io.stdout(`Retry: ${advice.retry}`);
+    io.stdout(`Owner: ${advice.owner}`);
+    if (advice.sources.length > 0) {
+      io.stdout(`Sources: ${advice.sources.join(', ')}`);
+    }
+    io.stdout(`Documentation: ${advice.documentation}`);
     return 0;
+  }
+  if (/^[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+$/u.test(target)) {
+    io.stderr(
+      `Unknown diagnostic code ${target}. Regenerate against the current public diagnostic registry or verify the code exactly.`,
+    );
+    return 1;
   }
   const configuration = await readApplicationProjectConfiguration(io.cwd);
   const outDir = options.outDir ?? configuration.outDir ?? '.applik8s/deploy';

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-applik8s: TypeScript framework for building applications on the Kubernetes control plane. TypeScript authoring APIs (packages/) are compiled to WASM components executed by a Rust operator host (crates/). Active release line is v0.7; see `goal.md` and `docs/charter-v07-agentic-platform.md`. CI on PRs runs `bun run check:v07:local`.
+applik8s: TypeScript framework for describing distributed applications as one typed application graph. TypeScript authoring APIs (`packages/`) compile into Node workloads and WASM reconciliation components executed by the Rust operator host (`crates/`). Active release line is v0.9; see `goal.md`, `docs/v0.9-manifesto.md`, and `docs/v0.9-public-contract.json`. The exact local CI aggregate is `bun run check:v09:ci`.
 
 ## Setup and toolchain
 
@@ -25,8 +25,8 @@ bun run lint                 # biome + check-typecasts + check-static-imports + 
 bun run test:implemented     # sharded vitest (sequential, maxWorkers=1); runs build:packages first
 bun run test:character       # roadmap tests
 bun run check:rust           # cargo fmt --check + clippy -D warnings + cargo test
-bun run check:local          # the full local gate: typecheck, lint, test:implemented, test:character, rust
-bun run check:v06:local      # what CI runs; superset of check:local
+bun run check:local          # historical general local gate
+bun run check:v09:ci         # exact v0.9 static, package-consumer, docs, evidence, and Rust gate
 bun run build:packages       # tsc emit into .package-build then copy to packages/*/dist
 bun run applik8s build <entry.ts> --typekro --composition-name <name> --out-dir <dir>   # CLI entry
 ```
@@ -47,7 +47,8 @@ bun run applik8s build <entry.ts> --typekro --composition-name <name> --out-dir 
 
 ## Package boundaries and public API
 
-- `scripts/check-module-boundaries.ts` enforces strict allowed-dependency rules for `core`, `ai`, `ai-tanstack`, `identity`, and all `deployment-*` packages (checked in `check:v06:local`/`check:v07:local`). Adding an import to a protected package is a likely lint failure.
+- `scripts/check-module-boundaries.ts` enforces strict allowed-dependency rules for portable contracts, maintained feature modules, runtimes, browser adapters, and all `deployment-*` packages. Adding an import to a protected package is a likely lint failure.
+- Maintained feature packages use `@applik8s/applik8s/provider-extension-runtime` for provider metadata. Those extension seams are intentionally absent from the umbrella root used by application authors.
 - Each package exposes a single `.` export from `src/index.ts` (plus intentional subpaths). A new subpath entrypoint must be added in three places: the package's `exports` in `packages/*/package.json`, `tsconfig.json` `paths`, and `vitest.workspace-aliases.ts` — where subpaths must be listed before their umbrella `@applik8s/*` entry or vertical tests silently diverge from live tests.
 - Public API changes need tests, docs, release notes, and `BACKLOG.md` roadmap updates (`docs/maintainer-policy.md`); throwing placeholders are not acceptable public contracts.
 

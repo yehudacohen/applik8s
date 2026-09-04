@@ -52,11 +52,15 @@ billing configuration, and presentation. Reusable mechanics stay in focused pack
 policy stay in generated source so the application can be changed without forking the framework.
 
 ```sh
-bun create applik8s
+bun create applik8s my-agentic-product
+cd my-agentic-product
+bun run doctor
+bun run dev
 ```
 
-Choose Agentic Start in the prompt, configure its public profile and secret references, then use the generated
-doctor and development commands. The release browser gate creates a fresh generated consumer, builds it, deploys
+The default is Agentic Start; there is no hidden template prompt. Use `--example research` only when you want the
+research-oriented variant. The generated doctor reports configuration and secret references without reading or
+printing secret values. The release browser gate creates a fresh generated consumer, builds it, deploys
 the graph, exercises its source-owned journeys in multiple browser contexts, captures visual evidence, proves a
 no-op redeploy, and destroys it.
 

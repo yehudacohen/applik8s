@@ -1,10 +1,12 @@
 // typecast-file-boundary: runtime schema validation establishes generic input/output contracts before values cross the predictive-provider boundary.
 import {
-  bindApplicationProviderDependencies,
-  bindApplicationProviderOperation,
   defineApplicationProvider,
   type ApplicationQualifiedProviderToken,
 } from '@applik8s/applik8s';
+import {
+  bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
+} from '@applik8s/applik8s/provider-extension-runtime';
 import {
   canonicalJsonV1String,
   type ApplicationMessageContractSchema,

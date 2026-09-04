@@ -93,6 +93,15 @@ function fakeBatchApi() {
 }
 
 describe('Kubernetes finite Job dispatcher', () => {
+  test('fails closed instead of adopting ambient kubeconfig', async () => {
+    await expect(createKubernetesApplicationJobDispatcher({
+      applicationId: 'reports',
+      deploymentId: 'production',
+      namespace: 'reports-system',
+      image,
+    })).rejects.toThrow(/explicit kubeConfig or inCluster: true/u);
+  });
+
   test('assembles controller admission and an exact-run worker over one durable authority', async () => {
     const store = createDeterministicApplicationJobStore();
     const dispatched: string[] = [];

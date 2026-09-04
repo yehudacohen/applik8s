@@ -1,46 +1,100 @@
 ---
-title: What is Applik8s?
-description: The shortest path to the Applik8s programming model.
+title: Start here
+description: Create, inspect, and run an Applik8s application in ten minutes.
 ---
 
 Applik8s is a TypeScript application framework that compiles one typed application graph into the runtime,
-permissions, workloads, and infrastructure selected by a profile.
+permissions, workloads, and infrastructure selected by a profile. Application code says what the product means;
+profiles select concrete providers without changing domain handlers.
 
-```ts title="src/application.ts"
-const GuestBookEntry = application.model(entries, {
-  name: 'GuestBookEntry',
-  database: Database,
-});
+## Create a runnable application
 
-GuestBookEntry.on.create('announce-entry', async created => {
-  await Notifications.send({
-    topic: 'guestbook',
-    message: created.value.message,
-  });
-});
+The default generator creates Agentic Start, a complete TanStack Start application with identity, workspaces,
+documents, an assistant, reviews, billing, administration, operational evidence, and deployment profiles.
 
-application.profile('local', profile =>
-  profile.provide(Database, localPostgres()),
-);
+```sh
+bun create applik8s my-agentic-product
+cd my-agentic-product
+bun run doctor
+bun run dev
 ```
 
-Application code states *what* the application means. A profile selects concrete implementations. The
-compiler records both layers in a canonical plan before deployment.
+Open the URL printed by `bun run dev`. The doctor identifies missing configuration by variable name and source
+reference; it does not read or print secret values. The generated application runs with its deterministic local
+profile before cloud credentials are configured. Use `bun create applik8s my-research-product --example research`
+for the research-oriented variant.
+
+The source you own is deliberately ordinary. `src/application.ts` composes modules, `src/providers.ts` chooses
+implementations, and `src/installation.ts` defines deployment intent. Product models and routes remain in the
+generated project so they can evolve with your product.
+
+## Read the programming model
+
+This complete fragment shows the central separation. A model owns domain state and event behavior; a profile
+provides implementations. Provider choice never enters the event handler.
+
+```ts title="src/application.ts"
+import { Database, TransactionalDatabase, app } from '@applik8s/applik8s';
+import { entity } from '@applik8s/applik8s/dsl';
+import { type } from 'arktype';
+
+const application = app('guestbook', { namespace: 'guestbook' });
+
+const Entry = application.crd(entity('Entry', {
+  spec: type({ author: 'string', message: 'string' }),
+  status: type({ "phase?": "'Pending' | 'Published'" }),
+}), {
+  apiVersion: 'guestbook.example.com/v1alpha1',
+});
+
+Entry.on.reconcile(async entry => {
+  entry.status.phase = 'Published';
+});
+
+application.profile('local', profile => {
+  profile.provide(TransactionalDatabase, Database.postgres());
+});
+
+export { application, Entry };
+```
+
+The generated Agentic Start is the fastest product path. The repository's maintained
+`examples/guestbook-start` is the smallest end-to-end fixture for reading CRD reconciliation, a live view, UI,
+and deployment together:
+
+```sh
+bun run --cwd examples/guestbook-start build
+bun run --cwd examples/guestbook-start deploy:local
+```
+
+## Inspect before deployment
+
+Builds create a canonical implementation plan. Use the CLI to understand why a provider was selected or how a
+diagnostic can be repaired before any mutation occurs.
+
+```sh
+bun run applik8s explain ./src/application.ts --profile local
+bun run applik8s explain RESEARCH_QUERY_INVALID
+```
+
+Deployment is explicit. Generated applications provide their own deploy command and require a named Kubernetes
+context or cloud profile. Applik8s never treats ambient infrastructure credentials as application configuration.
 
 ## What is stable in this preview?
 
 - direct callable application operations;
-- typed model and event contracts;
-- deterministic implementation identity and planning;
-- source-owned acceptance journeys;
-- effect guarantees and honest unknown outcomes.
+- typed relational and Kubernetes models, event contracts, queries, and persistent views;
+- deterministic provider identity, implementation planning, and explainable diagnostics;
+- jobs, workflows, Sagas, and actor contracts with explicit durability boundaries;
+- source-owned acceptance journeys and honest unknown outcomes.
 
 The v0.9 profile syntax shown above is implemented as a preview contract. The compiler emits every authored
-profile into a digest-bound implementation-plan artifact, and deployment selects exactly the plan named by
-the installation. Active deployment-state migration remains blocked until the exact v0.7.1 handoff
-fixture passes; ordinary clean v0.9 deployments are independently qualified.
+profile into a digest-bound implementation-plan artifact, and deployment selects exactly the plan named by the
+installation. Active deployment-state migration remains fail-closed until the exact handoff fixture succeeds;
+ordinary clean v0.9 deployments are qualified independently.
 
 ## Next
 
-Read [Operations and effect safety](../build-applications/operations-and-effects/) to understand what a
-direct method call means when a provider accepts work and the caller loses contact.
+Read [Choose the right primitive](./build-applications/decision-guide/) and
+[Operations and effect safety](./build-applications/operations-and-effects/). When a build rejects a program,
+look up its stable code in the [diagnostic reference](./reference/diagnostics/).

@@ -1,4 +1,8 @@
 import type { Diagnostic } from '@applik8s/core';
+import {
+  publicDiagnosticRecords,
+  type PublicDiagnosticRecord,
+} from './public-diagnostic-registry.js';
 
 export interface DiagnosticAdvice {
   readonly reason: string;
@@ -8,9 +12,17 @@ export interface DiagnosticAdvice {
   readonly howToFix: string;
   readonly effects: 'none' | 'partial' | 'unknown';
   readonly retry: 'automatic' | 'afterObjectChange' | 'notUntilFixed' | 'notApplicable';
+  readonly owner: string;
+  readonly sources: readonly string[];
+  readonly documentation: string;
 }
 
-const diagnosticTaxonomy: readonly DiagnosticAdvice[] = [
+type AuthoredDiagnosticAdvice = Omit<
+  DiagnosticAdvice,
+  'documentation' | 'owner' | 'sources'
+>;
+
+const diagnosticTaxonomy: readonly AuthoredDiagnosticAdvice[] = [
   {
     reason: 'SCHEMA_UNSUPPORTED',
     category: 'schema',
@@ -108,7 +120,24 @@ export function hasErrorDiagnostics(diagnostics: readonly Diagnostic[]): boolean
 }
 
 export function diagnosticAdviceForReason(reason: string): DiagnosticAdvice | undefined {
-  return diagnosticTaxonomy.find((entry) => entry.reason === reason);
+  const authored = diagnosticTaxonomy.find((entry) => entry.reason === reason);
+  const publicRecord = publicDiagnosticRecords.find(
+    (entry) => entry.code === reason,
+  );
+  if (authored) return completeAdvice(authored, publicRecord);
+  if (!publicRecord) return undefined;
+  return {
+    reason,
+    category: 'runtimeConfig',
+    whatHappened: `Applik8s rejected the operation with the stable ${reason} diagnostic.`,
+    likelyCause: `The ${publicRecord.owner} contract could not prove one of its required invariants from the supplied program, configuration, or observed provider state.`,
+    howToFix: `Inspect the diagnostic details and the owning source listed below, correct the rejected input or provider state, then rerun the same bounded command. Do not bypass the diagnostic with an unscoped side effect.`,
+    effects: 'unknown',
+    retry: 'notUntilFixed',
+    owner: publicRecord.owner,
+    sources: publicRecord.sources,
+    documentation: publicRecord.documentation,
+  };
 }
 
 export function diagnosticAdviceForDiagnostic(diagnostic: Diagnostic): DiagnosticAdvice | undefined {
@@ -116,5 +145,22 @@ export function diagnosticAdviceForDiagnostic(diagnostic: Diagnostic): Diagnosti
 }
 
 export function diagnosticTaxonomyEntries(): readonly DiagnosticAdvice[] {
-  return diagnosticTaxonomy;
+  return diagnosticTaxonomy.map((entry) =>
+    completeAdvice(
+      entry,
+      publicDiagnosticRecords.find((record) => record.code === entry.reason),
+    ));
+}
+
+function completeAdvice(
+  advice: AuthoredDiagnosticAdvice,
+  record: PublicDiagnosticRecord | undefined,
+): DiagnosticAdvice {
+  return {
+    ...advice,
+    owner: record?.owner ?? 'workspace:runtime',
+    sources: record?.sources ?? [],
+    documentation: record?.documentation
+      ?? 'docs-site/src/content/docs/understand/troubleshooting.mdx',
+  };
 }

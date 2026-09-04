@@ -41,6 +41,16 @@ export interface KubernetesApplicationScheduleRuntimeOptions {
   readonly serviceAccountName?: string;
   readonly databaseUrl?: string;
   readonly kubeConfig?: KubeConfig;
+  /** Explicitly select the pod's projected Kubernetes identity. Never reads ambient kubeconfig. */
+  readonly inCluster?: true;
+  /** Provider/test seam for an already-authorized Batch API. */
+  readonly api?: Pick<
+    BatchV1Api,
+    | 'readNamespacedCronJob'
+    | 'createNamespacedCronJob'
+    | 'replaceNamespacedCronJob'
+    | 'deleteNamespacedCronJob'
+  >;
   readonly image?: string;
   /** Maximum active CronJob projections allowed for one application/environment. */
   readonly maximumInstances?: number;
@@ -66,14 +76,24 @@ export async function createKubernetesApplicationScheduleRuntime(
   options: KubernetesApplicationScheduleRuntimeOptions,
 ): Promise<KubernetesApplicationScheduleRuntime> {
   validateOptions(options);
-  // static-import-exception: lazy loading keeps the Kubernetes SDK out of non-Kubernetes application hosts.
-  const kubernetes = await import('@kubernetes/client-node');
-  const kubeConfig = options.kubeConfig ?? new kubernetes.KubeConfig();
-  if (!options.kubeConfig) {
-    if (process.env.KUBERNETES_SERVICE_HOST) kubeConfig.loadFromCluster();
-    else kubeConfig.loadFromDefault();
+  if (options.kubeConfig && options.inCluster) {
+    throw new Error(
+      'Kubernetes schedule runtime must select exactly one explicit client source.',
+    );
   }
-  const api = kubeConfig.makeApiClient(kubernetes.BatchV1Api);
+  let api = options.api;
+  if (!api) {
+    if (!options.kubeConfig && !options.inCluster) {
+      throw new Error(
+        'Kubernetes schedule runtime requires an explicit kubeConfig or inCluster: true; ambient kubeconfig is never adopted.',
+      );
+    }
+    // static-import-exception: lazy loading keeps the Kubernetes SDK out of non-Kubernetes application hosts.
+    const kubernetes = await import('@kubernetes/client-node');
+    const kubeConfig = options.kubeConfig ?? new kubernetes.KubeConfig();
+    if (options.inCluster) kubeConfig.loadFromCluster();
+    api = kubeConfig.makeApiClient(kubernetes.BatchV1Api);
+  }
   const image = options.image ?? admissionImage;
   const maximumInstances = options.maximumInstances
     ?? DEFAULT_KUBERNETES_SCHEDULE_INSTANCE_CEILING;

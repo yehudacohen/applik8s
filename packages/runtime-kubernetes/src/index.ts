@@ -14,8 +14,13 @@ export interface KubernetesApplicationInstallationTransportOptions {
   readonly apiVersion: string;
   readonly kind: string;
   readonly plural: string;
-  readonly context: string;
+  readonly context?: string;
+  /** Explicit caller-owned client configuration. Ambient kubeconfig is never adopted. */
   readonly kubeConfig?: KubeConfig;
+  /** Explicit kubeconfig file selected by the caller. */
+  readonly kubeConfigPath?: string;
+  /** Explicitly use the pod's in-cluster service account configuration. */
+  readonly inCluster?: true;
   readonly deleteInstance: (reference: Required<ApplicationInstallationReference>, kubeConfig: KubeConfig) => Promise<void>;
 }
 
@@ -23,14 +28,20 @@ export interface KubernetesApplicationInstallationTransportOptions {
 export async function kubernetesApplicationInstallationTransport<TSpec extends object, TStatus extends object>(
   options: KubernetesApplicationInstallationTransportOptions,
 ): Promise<ApplicationInstallationTransport<TSpec, TStatus>> {
-  if (!options.context.trim()) throw new Error('Application installation client requires an explicit Kubernetes context.');
+  const sources = [options.kubeConfig, options.kubeConfigPath, options.inCluster].filter(Boolean);
+  if (sources.length !== 1) {
+    throw new Error(
+      'Application installation client requires exactly one of kubeConfig, kubeConfigPath, or inCluster: true; ambient kubeconfig is never adopted.',
+    );
+  }
   const [group, version] = options.apiVersion.split('/');
   if (!group || !version) throw new Error(`Application installation apiVersion ${options.apiVersion} must contain a group and version.`);
   // static-import-exception: the Kubernetes SDK loads only when a Node-side installation client is explicitly connected.
   const kubernetes = await import('@kubernetes/client-node');
   const kubeConfig = options.kubeConfig ?? new kubernetes.KubeConfig();
-  if (!options.kubeConfig) kubeConfig.loadFromDefault();
-  kubeConfig.setCurrentContext(options.context);
+  if (options.kubeConfigPath) kubeConfig.loadFromFile(options.kubeConfigPath);
+  if (options.inCluster) kubeConfig.loadFromCluster();
+  if (options.context?.trim()) kubeConfig.setCurrentContext(options.context);
   const api = kubeConfig.makeApiClient(kubernetes.CustomObjectsApi);
   const common = { group, version, plural: options.plural };
   return {

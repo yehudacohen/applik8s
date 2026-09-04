@@ -37,6 +37,20 @@ describe('diagnostic taxonomy', () => {
       expect(entry.whatHappened.length).toBeGreaterThan(20);
       expect(entry.likelyCause.length).toBeGreaterThan(20);
       expect(entry.howToFix.length).toBeGreaterThan(20);
+      expect(entry.owner.length).toBeGreaterThan(0);
+      expect(entry.documentation.length).toBeGreaterThan(0);
     }
+  });
+
+  it('provides generated ownership and remediation for the complete public catalog', () => {
+    expect(diagnosticAdviceForReason('RESEARCH_QUERY_INVALID')).toMatchObject({
+      reason: 'RESEARCH_QUERY_INVALID',
+      owner: 'package:@applik8s/research',
+      effects: 'unknown',
+      retry: 'notUntilFixed',
+    });
+    expect(
+      diagnosticAdviceForReason('RESEARCH_QUERY_INVALID')?.documentation,
+    ).toContain('#diagnostic-research-query-invalid');
   });
 });

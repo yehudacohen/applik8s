@@ -2282,8 +2282,6 @@
             "asOperationTargetFactory",
             "assertApplicationManagedModelConditionOwnership",
             "bindApplicationModelViews",
-            "bindApplicationProviderDependencies",
-            "bindApplicationProviderOperation",
             "canonicalJsonCompatibleV1Policy",
             "canonicalJsonStrictV1Policy",
             "canonicalJsonV1Bytes",
@@ -15127,7 +15125,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-abi-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15145,7 +15143,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-authority-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15163,7 +15161,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-context-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15181,7 +15179,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-deadline-expired",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15199,7 +15197,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-identity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15217,7 +15215,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-operation-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15235,7 +15233,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-receipt-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15253,7 +15251,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-trace-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15271,7 +15269,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-admission-version-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15289,7 +15287,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-applik8s-saga-database-url",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15309,7 +15307,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-bound-field-override",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15327,7 +15325,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-break-glass-acknowledgement-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15345,7 +15343,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-catalog-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15363,7 +15361,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-catalog-migration-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15382,7 +15380,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-delegation-broadening",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15400,7 +15398,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-delegation-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15418,7 +15416,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-duplicate-operation",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15436,7 +15434,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-execution-binding-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15454,7 +15452,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-execution-binding-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15472,7 +15470,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-grant-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15490,7 +15488,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-grant-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15508,7 +15506,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-invalid-operation-id",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15526,7 +15524,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-invalid-reservation-transition",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15545,7 +15543,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-invalid-scope",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15563,7 +15561,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-manifest-identity-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15581,7 +15579,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-manifest-revision-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15599,7 +15597,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-origin-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15617,7 +15615,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-outcome-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15635,7 +15633,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-outcome-self-verification",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15653,7 +15651,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-outcome-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15671,7 +15669,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-permission-not-grantable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15689,7 +15687,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-permission-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15707,7 +15705,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-request-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15725,7 +15723,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-request-invalid-state",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15743,7 +15741,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-request-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15761,7 +15759,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-reservation-not-found",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15779,7 +15777,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-reservation-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15797,7 +15795,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-retired-operation",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15815,7 +15813,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-revocation-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15833,7 +15831,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-revocation-invalid-state",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15852,7 +15850,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-revocation-pending",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15870,7 +15868,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-revocation-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15888,7 +15886,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-scope-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15906,7 +15904,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-self-approval",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15924,7 +15922,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-self-grant",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15942,7 +15940,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authority-unclassified-operation",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15960,7 +15958,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-audience-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15978,7 +15976,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-catalog-inactive",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -15996,7 +15994,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-context-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16014,7 +16012,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-grant-exhausted",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16032,7 +16030,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-grant-expired",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16050,7 +16048,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-grant-revoked",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16068,7 +16066,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-no-grant",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16087,7 +16085,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-operation-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16105,7 +16103,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-operation-unclassified",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16123,7 +16121,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-policy-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16141,7 +16139,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-scope-empty",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16159,7 +16157,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-authorization-transport-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16178,7 +16176,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-aws-configuration-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16197,7 +16195,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-aws-cost-bound-exceeded",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16217,7 +16215,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-aws-provider-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16237,7 +16235,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-aws-runtime-access-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16256,7 +16254,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-aws-sensitive-data",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16289,7 +16287,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-bundle-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16307,7 +16305,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-cancellation-pending",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -16324,7 +16322,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-canonical-json-cycle",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16342,7 +16340,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-canonical-json-non-finite-number",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16360,7 +16358,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-canonical-json-undefined",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16378,7 +16376,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-canonical-json-unsupported-value",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16397,7 +16395,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-capability-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16417,7 +16415,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-capability-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16435,7 +16433,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16453,7 +16451,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16471,7 +16469,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-invalid-state",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16489,7 +16487,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-not-found",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16507,7 +16505,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-operation-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16525,7 +16523,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-predecessor-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16543,7 +16541,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-referenced",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16561,7 +16559,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-catalog-revision-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16583,7 +16581,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-compatibility-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16602,7 +16600,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-connection-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16622,7 +16620,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-edge-cycle",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16642,7 +16640,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-edge-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16662,7 +16660,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-graph-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16682,7 +16680,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-identity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16702,7 +16700,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-lifecycle-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16722,7 +16720,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-node-duplicate",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16742,7 +16740,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-node-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16762,7 +16760,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-output-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16782,7 +16780,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-secret-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16802,7 +16800,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-singleton-drift",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16822,7 +16820,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-status-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16842,7 +16840,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-deployment-strategy-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16861,7 +16859,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-development-agent-turn-failed",
       "evidence": [
         "real-provider-preview-journey",
         "public-contract-freeze"
@@ -16878,7 +16876,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-effect-fence-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16896,7 +16894,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-effect-identity-unstable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16914,7 +16912,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-effect-receipt-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16932,7 +16930,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-effect-retry-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16950,7 +16948,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-execution-admission-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16968,7 +16966,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-execution-admission-too-large",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -16986,7 +16984,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-finalizer-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17004,7 +17002,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-flow-binding-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17022,7 +17020,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-flow-rate-limited",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17040,7 +17038,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-flow-transition-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17058,7 +17056,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-flow-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17076,7 +17074,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-guest-host-envelope-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17094,7 +17092,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-identity-duplicate",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17112,7 +17110,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-identity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17130,7 +17128,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-native-plan-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17148,7 +17146,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-provenance-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17166,7 +17164,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-provider-guarantee-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17184,7 +17182,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-runtime-access-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17202,7 +17200,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-foundation-target-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17220,7 +17218,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-handler-not-found",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17238,7 +17236,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-handler-output-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17256,7 +17254,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-handler-timeout",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17274,7 +17272,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-handler-trap",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17292,7 +17290,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-internal-invocation-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17310,7 +17308,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-internal-invocation-too-large",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17328,7 +17326,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-internal-token-passthrough-forbidden",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17347,7 +17345,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-job-execution-deadline-exceeded",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17366,7 +17364,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-job-execution-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17384,7 +17382,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-job-lease-lost",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17402,7 +17400,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-job-store-invariant",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17420,7 +17418,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-job-worker-stopped",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17438,7 +17436,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-assertion-timeout",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17457,7 +17455,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-authority-setup-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17476,7 +17474,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-cleanup-incomplete",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17495,7 +17493,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-dependency-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17514,7 +17512,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-evidence-redaction-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17533,7 +17531,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-fixture-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17552,7 +17550,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-journey-provider-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17571,7 +17569,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-api-error",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17589,7 +17587,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-authority-undeclared",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17607,7 +17605,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-binding-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17625,7 +17623,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-cancelled",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17644,7 +17642,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17662,7 +17660,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-continuation-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17681,7 +17679,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-deadline",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17699,7 +17697,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-endpoint-forbidden",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17718,7 +17716,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-forbidden",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17736,7 +17734,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-list-unbounded",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17754,7 +17752,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-mutation-ownership-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17773,7 +17771,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-not-found",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17792,7 +17790,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-protocol-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17810,7 +17808,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-response-limit",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17828,7 +17826,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-schema-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17846,7 +17844,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-scope-unbounded",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17866,7 +17864,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-kubernetes-cluster-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17885,7 +17883,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-lifecycle-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17903,7 +17901,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-local-capability-unbound",
       "evidence": [
         "clean-package-consumer",
         "agentic-start-browser",
@@ -17921,7 +17919,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-local-kubernetes-read-failed",
       "evidence": [
         "clean-package-consumer",
         "agentic-start-browser",
@@ -17940,7 +17938,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-local-lifecycle-collision",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17960,7 +17958,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-local-provider-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -17980,7 +17978,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-local-target-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18004,7 +18002,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-manifest-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18023,7 +18021,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-authentication-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18043,7 +18041,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-authorization-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18062,7 +18060,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-catalog-reinitialize-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18081,7 +18079,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-deadline-exceeded",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18100,7 +18098,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-external-credential-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18119,7 +18117,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-external-schema-changed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18139,7 +18137,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-external-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18159,7 +18157,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-input-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18179,7 +18177,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-protocol-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18199,7 +18197,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-request-too-large",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18219,7 +18217,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-response-too-large",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18238,7 +18236,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-session-identity-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18258,7 +18256,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-session-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18277,7 +18275,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-session-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18296,7 +18294,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-tool-ambiguous",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18316,7 +18314,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-tool-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18336,7 +18334,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-mcp-tool-unknown",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18354,7 +18352,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-concurrent-operation",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18372,7 +18370,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-forward-recovery-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18391,7 +18389,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-lifecycle-transfer-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18409,7 +18407,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-mapping-ambiguous",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18427,7 +18425,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-physical-identity-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18446,7 +18444,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-provider-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18464,7 +18462,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-retained-data-unsafe",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18482,7 +18480,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-rollback-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18500,7 +18498,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-shared-owner-blocked",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18518,7 +18516,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-source-release-unqualified",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18536,7 +18534,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-source-schema-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18554,7 +18552,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-migration-source-state-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18572,7 +18570,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-artifact-integrity-failed",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18590,7 +18588,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-data-residency-unsatisfied",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18608,7 +18606,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-input-invalid",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18626,7 +18624,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-model-version-unavailable",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18644,7 +18642,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-output-invalid",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18662,7 +18660,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-provider-failed",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18680,7 +18678,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ml-timeout",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -18697,7 +18695,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-audience-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18715,7 +18713,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-authentication-required",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18733,7 +18731,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-client-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18751,7 +18749,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-flow-binding-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18769,7 +18767,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-flow-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18787,7 +18785,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-principal-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18805,7 +18803,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-provider-decision-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18823,7 +18821,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-request-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18841,7 +18839,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-resource-owner-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18859,7 +18857,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-scope-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18877,7 +18875,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-token-expired",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18895,7 +18893,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-token-identity-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18913,7 +18911,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-token-inactive",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18931,7 +18929,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-token-location-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18949,7 +18947,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-oauth-token-too-large",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -18967,7 +18965,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-cancelled",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -18986,7 +18984,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-request-rejected",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19007,7 +19005,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-response-invalid",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19025,7 +19023,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-timeout",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19044,7 +19042,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-unauthorized",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19062,7 +19060,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-ory-unavailable",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19080,7 +19078,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-outcome-unknown",
       "evidence": [
         "provider-conformance",
         "public-contract-freeze"
@@ -19097,7 +19095,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-partial-apply-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19115,7 +19113,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-actor-capability-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19134,7 +19132,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-comparison-application-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19152,7 +19150,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-comparison-graph-version-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19170,7 +19168,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-comparison-schema-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19188,7 +19186,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-implementation-graph-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19207,7 +19205,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-implementation-profile-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19226,7 +19224,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-physical-contributor-undeclared",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19245,7 +19243,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-physical-implementation-ambiguous",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19264,7 +19262,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-plan-physical-implementation-unknown",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19283,7 +19281,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-profile-binding-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19301,7 +19299,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-completion-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19319,7 +19317,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-configuration-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19337,7 +19335,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-continuity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19355,7 +19353,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-dependency-cycle",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19373,7 +19371,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-dependency-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19391,7 +19389,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-dependency-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19409,7 +19407,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-implementation-identity-collision",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19427,7 +19425,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-implementation-identity-unstable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19445,7 +19443,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-provider-session-orphaned",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19464,7 +19462,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-query-batch-cancelled",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19482,7 +19480,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-rbac-denied",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19500,7 +19498,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-research-evidence-incomplete",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19518,7 +19516,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-research-query-invalid",
       "evidence": [
         "provider-conformance",
         "workspace-typecheck",
@@ -19537,7 +19535,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-resource-conflict",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19555,7 +19553,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-resource-not-found",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19573,7 +19571,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-bootstrap-iam-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19592,7 +19590,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-bootstrap-iam-widened",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19611,7 +19609,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-credential-cross-namespace",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19630,7 +19628,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-credential-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19649,7 +19647,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-credential-widened",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19668,7 +19666,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-execution-role-misbound",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19687,7 +19685,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-execution-role-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19707,7 +19705,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-explicit-redundant",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19727,7 +19725,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-explicit-unused",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19747,7 +19745,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-explicit-widening",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19766,7 +19764,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-iam-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19785,7 +19783,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-iam-widened",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19805,7 +19803,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-network-misbound",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19825,7 +19823,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-network-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19845,7 +19843,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-network-widened",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19865,7 +19863,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-network-wrong-port",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19885,7 +19883,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-network-wrong-protocol",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19905,7 +19903,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-provider-guarantee-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19924,7 +19922,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-rbac-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19943,7 +19941,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-rbac-widened",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19962,7 +19960,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-role-misbound",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -19981,7 +19979,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-role-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20000,7 +19998,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-service-account-mismatch",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20020,7 +20018,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-target-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20040,7 +20038,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-wildcard-forbidden",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20060,7 +20058,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-access-workload-missing",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20079,7 +20077,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-runtime-incompatible",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20097,7 +20095,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-saga-compensated",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20115,7 +20113,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-saga-compensation-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20133,7 +20131,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-saga-effect-outside-boundary",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20151,7 +20149,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-saga-nesting-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20169,7 +20167,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-saga-outcome-unknown",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20187,7 +20185,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-cadence-unrepresentable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20206,7 +20204,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-cardinality-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20225,7 +20223,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-lateness-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20244,7 +20242,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-misfire-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20263,7 +20261,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-precision-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20282,7 +20280,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-provider-unimplemented",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20301,7 +20299,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-provider-unresolved",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20320,7 +20318,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schedule-timezone-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20340,7 +20338,7 @@
         "runtime"
       ],
       "stability": "experimental",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schema-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20359,7 +20357,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-schema-unsupported",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20377,7 +20375,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-serialization-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20395,7 +20393,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-algorithm-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20413,7 +20411,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-crypto-unavailable",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20432,7 +20430,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-expired",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20450,7 +20448,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-issued-at-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20468,7 +20466,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-key-id-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20486,7 +20484,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-key-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20505,7 +20503,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-key-unknown",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20524,7 +20522,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-lifetime-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20542,7 +20540,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-malformed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20561,7 +20559,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-oversized",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20580,7 +20578,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-payload-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20598,7 +20596,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-purpose-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20616,7 +20614,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-shape-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20634,7 +20632,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-signature-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20653,7 +20651,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-signed-envelope-version-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20671,7 +20669,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-duplicate-package",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20689,7 +20687,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-duplicate-profile",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20707,7 +20705,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-duplicate-route",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20725,7 +20723,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-generator-budget",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20743,7 +20741,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-generator-path",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20761,7 +20759,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-generator-unpinned",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20779,7 +20777,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-start-identity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20797,7 +20795,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-status-patch-failed",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20815,7 +20813,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-telemetry-baggage-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20833,7 +20831,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-telemetry-envelope-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20851,7 +20849,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-telemetry-identity-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -20869,7 +20867,7 @@
         "runtime"
       ],
       "stability": "stable",
-      "documentation": "docs/packages.md",
+      "documentation": "docs-site/src/content/docs/reference/diagnostics.mdx#diagnostic-telemetry-metric-invalid",
       "evidence": [
         "workspace-typecheck",
         "clean-package-consumer",
@@ -26410,17 +26408,12 @@
     {
       "name": "KUBERNETES_SERVICE_HOST",
       "owners": [
-        "@applik8s/applik8s",
-        "@applik8s/runtime-kubernetes",
-        "@applik8s/server"
+        "@applik8s/applik8s"
       ],
       "sources": [
         "packages/applik8s/src/application-generated-runtime-sources.ts",
         "packages/applik8s/src/application-runtime-modules.ts",
-        "packages/applik8s/src/application-server-runtime.ts",
-        "packages/runtime-kubernetes/src/job-runtime.ts",
-        "packages/runtime-kubernetes/src/schedule.ts",
-        "packages/server/src/kubernetes-gateway.ts"
+        "packages/applik8s/src/application-server-runtime.ts"
       ],
       "maturity": "experimental",
       "compatibility": [

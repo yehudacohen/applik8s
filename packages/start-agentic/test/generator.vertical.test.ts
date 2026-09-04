@@ -44,6 +44,59 @@ afterEach(async () => {
 });
 
 describe('Agentic Start generator', () => {
+  it('defaults generated dependencies and lineage to the current published release line', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'applik8s-agentic-start-version-'));
+    temporaryDirectories.push(parent);
+    const target = join(parent, 'current-release');
+
+    await createApplicationAgenticStart({
+      targetDirectory: target,
+      install: false,
+      async run() {
+        await mkdir(join(target, 'src/routes'), { recursive: true });
+        await writeFile(
+          join(target, 'package.json'),
+          `${JSON.stringify({
+            name: 'upstream',
+            scripts: { dev: 'vite --port 3000' },
+            dependencies: {
+              '@tanstack/react-start': '1.168.28',
+              '@tanstack/react-router': '1.168.28',
+              react: '^19.1.0',
+            },
+          })}\n`,
+        );
+        await writeFile(
+          join(target, 'src/routes/index.tsx'),
+          'export const upstream = true;\n',
+        );
+        await writeOfficialRouterFiles(target);
+      },
+    });
+
+    const manifest = JSON.parse(
+      await readFile(join(target, 'package.json'), 'utf8'),
+    ) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(manifest.dependencies['@applik8s/start-agentic']).toBe('^0.9.0');
+    expect(manifest.dependencies['@applik8s/applik8s']).toBe('^0.9.0');
+    expect(manifest.devDependencies['@applik8s/cli']).toBe('^0.9.0');
+    const lineage = JSON.parse(
+      await readFile(join(target, '.applik8s-start.json'), 'utf8'),
+    ) as {
+      startVersion: string;
+      generatorVersion: string;
+      packageVersion: string;
+    };
+    expect(lineage).toMatchObject({
+      startVersion: '0.9.0',
+      generatorVersion: '0.9.0',
+      packageVersion: '^0.9.0',
+    });
+  });
+
   it('overlays the exact official TanStack Start scaffold and reuses the qualified database authority', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'applik8s-agentic-start-'));
     temporaryDirectories.push(parent);

@@ -9,7 +9,9 @@ const requiredPages = {
     'link: /docs/preview/v0.9/build-applications/operations-and-effects/',
   ],
   'docs-site/src/content/docs/start-here.mdx': [
-    'What is Applik8s?',
+    'bun create applik8s my-agentic-product',
+    'bun run doctor',
+    'bun run dev',
     "application.profile('local'",
     'implemented as a preview contract',
   ],
@@ -40,7 +42,7 @@ const requiredPages = {
   'docs-site/src/content/docs/build-applications/decision-guide.mdx': [
     'Choose the right primitive',
     '`Model.create/update/delete`',
-    '`workflow(...)`',
+    '`application.workflow(workflow(...))`',
   ],
   'docs-site/src/content/docs/build-applications/models-queries-views.mdx': [
     'Models, queries, and views',
@@ -81,6 +83,11 @@ const requiredPages = {
   'docs-site/src/content/docs/reference/public-contracts.mdx': [
     'v0.9-public-contract.json',
     'does not upgrade',
+  ],
+  'docs-site/src/content/docs/reference/diagnostics.mdx': [
+    'Diagnostic reference',
+    'applik8s explain',
+    'bounded recovery path',
   ],
   'docs-site/src/content/docs/upgrade/v071-to-v09.mdx': [
     '--migrate-from 0.7.1',
@@ -157,9 +164,35 @@ for (const expected of [
   "slug: 'build-applications/ml-models'",
   "slug: 'distributed-behavior'",
   "slug: 'infrastructure-providers/provider-guarantees'",
+  "slug: 'reference/diagnostics'",
 ]) {
   if (!config.includes(expected)) {
     findings.push(`V09_DOCUMENTATION_SITE_INVALID: Astro configuration must contain ${JSON.stringify(expected)}.`);
+  }
+}
+
+const examplesStart = await readFile('docs-site/src/content/docs/examples-starts.mdx', 'utf8');
+if (/```sh\s+bun create applik8s\s+```/u.test(examplesStart) || examplesStart.includes('Choose Agentic Start in the prompt')) {
+  findings.push('V09_DOCUMENTATION_CREATE_COMMAND_STALE: Agentic Start documentation must show the required project name and must not invent an interactive template prompt.');
+}
+
+const publicContract = JSON.parse(
+  await readFile('docs/v0.9-public-contract.json', 'utf8'),
+) as { readonly diagnostics?: readonly { readonly code?: string; readonly documentation?: string }[] };
+const diagnosticReference = await readFile('docs-site/src/content/docs/reference/diagnostics.mdx', 'utf8');
+for (const diagnostic of publicContract.diagnostics ?? []) {
+  if (!diagnostic.code || !diagnostic.documentation) {
+    findings.push('V09_DIAGNOSTIC_DOCUMENTATION_INVALID: every catalog entry requires a code and documentation target.');
+    continue;
+  }
+  const expectedPrefix = 'docs-site/src/content/docs/reference/diagnostics.mdx#';
+  if (!diagnostic.documentation.startsWith(expectedPrefix)) {
+    findings.push(`V09_DIAGNOSTIC_DOCUMENTATION_INVALID: ${diagnostic.code} points outside the diagnostic reference.`);
+    continue;
+  }
+  const anchor = diagnostic.documentation.slice(expectedPrefix.length);
+  if (!diagnosticReference.includes(`<a id="${anchor}"></a>`)) {
+    findings.push(`V09_DIAGNOSTIC_DOCUMENTATION_MISSING: ${diagnostic.code} has no stable documentation anchor.`);
   }
 }
 

@@ -64,6 +64,8 @@ export interface ApplicationKubernetesCapabilityWatchClient {
 
 export interface KubernetesApplicationCapabilityHostOptions {
   readonly kubeConfig?: KubeConfig;
+  /** Explicitly select the pod's projected Kubernetes identity. Never reads ambient kubeconfig. */
+  readonly inCluster?: true;
   readonly objects?: ApplicationKubernetesCapabilityObjectClient;
   readonly watch?: ApplicationKubernetesCapabilityWatchClient;
   /** Revalidates exact compiled access and returns framework-derived authority evidence. */
@@ -80,10 +82,18 @@ export interface KubernetesApplicationCapabilityHostOptions {
 export function createKubernetesApplicationCapabilityHost(
   options: KubernetesApplicationCapabilityHostOptions,
 ): ApplicationKubernetesCapabilityHost {
-  const kubeConfig = options.kubeConfig ?? defaultKubeConfig();
+  if (options.kubeConfig && options.inCluster) {
+    throw new Error(
+      'Kubernetes capability host must select exactly one explicit client source.',
+    );
+  }
+  const requiresConfig = !options.objects || !options.watch;
+  const kubeConfig = requiresConfig
+    ? explicitKubeConfig(options.kubeConfig, options.inCluster)
+    : options.kubeConfig;
   const objects: ApplicationKubernetesCapabilityObjectClient = options.objects
-    ?? (KubernetesObjectApi.makeApiClient(kubeConfig) as unknown as ApplicationKubernetesCapabilityObjectClient);
-  const watch = options.watch ?? new Watch(kubeConfig);
+    ?? (KubernetesObjectApi.makeApiClient(kubeConfig!) as unknown as ApplicationKubernetesCapabilityObjectClient);
+  const watch = options.watch ?? new Watch(kubeConfig!);
   const now = options.now ?? Date.now;
   return Object.freeze({
     async invoke(intent: ApplicationKubernetesCapabilityIntent): Promise<ApplicationKubernetesCapabilityResponse> {
@@ -360,8 +370,17 @@ function safeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : 'Kubernetes capability operation failed.';
 }
 
-function defaultKubeConfig(): KubeConfig {
+function explicitKubeConfig(
+  configured: KubeConfig | undefined,
+  inCluster: true | undefined,
+): KubeConfig {
+  if (configured) return configured;
+  if (!inCluster) {
+    throw new Error(
+      'Kubernetes capability host requires an explicit kubeConfig or inCluster: true; ambient kubeconfig is never adopted.',
+    );
+  }
   const config = new KubeConfig();
-  config.loadFromDefault();
+  config.loadFromCluster();
   return config;
 }

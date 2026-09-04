@@ -7,12 +7,12 @@ import {
 export const applicationAgenticStartDefinition = Object.freeze({
   apiVersion: applicationStartDefinitionApiVersion,
   name: 'agentic',
-  version: '0.8.0',
+  version: '0.9.0',
   compatibility: {
     // Exact upstream-compatible tuple. TanStack packages intentionally carry
     // independent release numbers; generators and examples must use this
     // whole set rather than independently ranged versions.
-    applik8s: '0.8.0',
+    applik8s: '0.9.0',
     tanstackCli: '0.70.1',
     tanstackStart: '1.168.28',
     tanstackRouter: '1.170.18',

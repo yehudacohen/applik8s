@@ -1932,12 +1932,19 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       // static-import-exception: the Kubernetes SDK adapter loads only for an explicit default installation connection.
       let transport = connectOptions.transport;
       if (!transport) {
+        if (!connectOptions.kubeConfigPath && !connectOptions.inCluster) {
+          throw new Error(
+            `Application ${name} installation.connect(...) requires kubeConfigPath or inCluster: true when no transport is injected; ambient kubeconfig is never adopted.`,
+          );
+        }
         // static-import-exception: preserve the provider-neutral authoring package by loading the Kubernetes adapter on demand.
         transport = await import('@applik8s/runtime-kubernetes').then(({ kubernetesApplicationInstallationTransport }) => kubernetesApplicationInstallationTransport<TSpec, TStatus>({
           apiVersion: installationModel.apiVersion,
           kind: installationModel.kind,
           plural: installationModel.plural,
           context: connectOptions.context ?? '',
+          ...(connectOptions.kubeConfigPath ? { kubeConfigPath: connectOptions.kubeConfigPath } : {}),
+          ...(connectOptions.inCluster ? { inCluster: true as const } : {}),
           async deleteInstance(reference, kubeConfig) {
             const factory = materialize().factory('kro', {
               namespace: reference.namespace,

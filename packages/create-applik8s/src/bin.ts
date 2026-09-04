@@ -9,7 +9,7 @@ const start = values.start ?? 'agentic';
 
 if (!target) {
   throw new Error(
-    'Usage: bun create applik8s <project-name> [--start agentic] [--example research] [--context <kube-context>]',
+    'Usage: bun create applik8s <project-name> [--start agentic] [--example research] [--context <kube-context>] [--no-install]',
   );
 }
 if (start !== 'agentic') {
@@ -20,6 +20,7 @@ if (start !== 'agentic') {
 
 const result = await createApplicationAgenticStart({
   targetDirectory: target,
+  ...(values.install === false ? { install: false } : {}),
   ...(values.context ? { context: values.context } : {}),
   ...(values.example ? { example: values.example } : {}),
   progress({ message }) {
@@ -48,6 +49,7 @@ interface ParsedArguments {
   readonly start?: string;
   readonly context?: string;
   readonly example?: 'product' | 'research';
+  readonly install?: boolean;
 }
 
 function parseArguments(args: readonly string[]): ParsedArguments {
@@ -55,6 +57,7 @@ function parseArguments(args: readonly string[]): ParsedArguments {
   let start: string | undefined;
   let context: string | undefined;
   let example: 'product' | 'research' | undefined;
+  let install: boolean | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === '--start' || value === '--context' || value === '--example') {
@@ -76,6 +79,10 @@ function parseArguments(args: readonly string[]): ParsedArguments {
       continue;
     }
     if (value?.startsWith('-')) {
+      if (value === '--no-install') {
+        install = false;
+        continue;
+      }
       throw new Error(`Unknown option ${value}.`);
     }
     if (target) {
@@ -88,5 +95,6 @@ function parseArguments(args: readonly string[]): ParsedArguments {
     ...(start ? { start } : {}),
     ...(context ? { context } : {}),
     ...(example ? { example } : {}),
+    ...(install === false ? { install } : {}),
   };
 }

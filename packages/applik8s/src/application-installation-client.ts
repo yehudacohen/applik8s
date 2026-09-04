@@ -27,8 +27,12 @@ export interface ApplicationInstallationClient<TSpec extends object, TStatus ext
 }
 
 export interface ApplicationInstallationConnectOptions<TSpec extends object, TStatus extends object> {
-  /** Required by the default Kubernetes transport; never inferred from ambient current context. */
+  /** Optional context within an explicitly selected kubeconfig file. */
   readonly context?: string;
+  /** Explicit kubeconfig file used by the default Kubernetes transport. */
+  readonly kubeConfigPath?: string;
+  /** Explicitly use the pod's in-cluster service-account configuration. */
+  readonly inCluster?: true;
   readonly namespace?: string;
   /** Injectable provider-neutral transport for alternate clients and deterministic tests. */
   readonly transport?: ApplicationInstallationTransport<TSpec, TStatus>;

@@ -133,7 +133,7 @@ inspects the discovered model/view/agent graph, and proves that inferred
 transport did not create anonymous authority. The maintained product browser
 gate exercises the assistant and tool path end to end.
 
-Starter lineage: `agentic@0.8.0`, tracked in `.applik8s-start.json` for
+Starter lineage: `agentic@0.9.0`, tracked in `.applik8s-start.json` for
 deterministic three-way update reporting;
 generator `@applik8s/start-agentic@0.7.0`;
 TanStack CLI `0.70.1`;

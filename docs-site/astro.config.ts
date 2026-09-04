@@ -60,7 +60,10 @@ export default defineConfig({
         { label: 'Examples & Starts', items: [{ label: 'GuestBook, Chirp, and Agentic Start', slug: 'examples-starts' }] },
         {
           label: 'Reference',
-          items: [{ label: 'Public contract inventory', slug: 'reference/public-contracts' }],
+          items: [
+            { label: 'Public contract inventory', slug: 'reference/public-contracts' },
+            { label: 'Diagnostics', slug: 'reference/diagnostics' },
+          ],
         },
         {
           label: 'Upgrade & Migrate',

@@ -16,6 +16,15 @@ const resource = {
 };
 
 describe('Kubernetes capability Node host', () => {
+  it('fails closed instead of adopting ambient kubeconfig', () => {
+    expect(() => createKubernetesApplicationCapabilityHost({
+      authorize: () => ({
+        authorityReceipt: 'receipt',
+        causalContext: 'principal',
+      }),
+    })).toThrow(/explicit kubeConfig or inCluster: true/u);
+  });
+
   it('executes the complete bounded operation family and records framework authority', async () => {
     const calls: string[] = [];
     const observed: unknown[] = [];

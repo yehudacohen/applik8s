@@ -89,6 +89,8 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly maxMultiplexSubscriptions?: number;
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly kubeConfig?: KubeConfig;
+  /** Explicitly select the pod's projected service-account identity. Ambient kubeconfig is never adopted. */
+  readonly inCluster?: true;
   readonly objects?: Applik8sResourceObjectClient;
   readonly watch?: Applik8sResourceWatchClient;
   readonly readiness?: () => void | Promise<void>;
@@ -288,10 +290,20 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   }
   const commands = uniqueById(options.commands ?? [], 'command');
   const queries = uniqueById(options.queries ?? [], 'query');
-  const config = options.kubeConfig ?? defaultKubeConfig();
-  const objects: Applik8sResourceObjectClient = options.objects ?? config.makeApiClient(CustomObjectsApi);
-  const watch: Applik8sResourceWatchClient = options.watch ?? new Watch(config);
-  const version = options.readiness ? undefined : config.makeApiClient(VersionApi);
+  if (options.kubeConfig && options.inCluster) {
+    throw new Error('Applik8s Kubernetes gateway must select exactly one explicit Kubernetes client source.');
+  }
+  const requiresConfig = !options.objects || !options.watch || !options.readiness;
+  const config = requiresConfig
+    ? explicitKubeConfig(options.kubeConfig, options.inCluster)
+    : options.kubeConfig;
+  const requiredConfig = (): KubeConfig => {
+    if (!config) throw new Error('Applik8s Kubernetes gateway internal client configuration is unavailable.');
+    return config;
+  };
+  const objects: Applik8sResourceObjectClient = options.objects ?? requiredConfig().makeApiClient(CustomObjectsApi);
+  const watch: Applik8sResourceWatchClient = options.watch ?? new Watch(requiredConfig());
+  const version = options.readiness ? undefined : requiredConfig().makeApiClient(VersionApi);
   const subscriptions = subscriptionLimiter({
     perPrincipal: options.subscriptionLimits?.perPrincipal ?? 20,
     total: options.subscriptionLimits?.total ?? 1_000,
@@ -358,7 +370,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
     if (stopping) throw new Error('Applik8s Kubernetes gateway is stopping.');
     if (options.readiness) await options.readiness();
     else {
-      if (!config.getCurrentCluster()) throw new Error('Kubernetes configuration has no current cluster.');
+      if (!requiredConfig().getCurrentCluster()) throw new Error('Kubernetes configuration has no current cluster.');
       await version?.getCode({});
     }
   }
@@ -928,10 +940,18 @@ function splitApiVersion(apiVersion: string): { readonly group: string; readonly
   return { group, version };
 }
 
-function defaultKubeConfig(): KubeConfig {
+function explicitKubeConfig(
+  configured: KubeConfig | undefined,
+  inCluster: true | undefined,
+): KubeConfig {
+  if (configured) return configured;
+  if (!inCluster) {
+    throw new Error(
+      'Applik8s Kubernetes gateway requires an explicit kubeConfig, inCluster: true, or complete injected clients; ambient kubeconfig is never adopted.',
+    );
+  }
   const config = new KubeConfig();
-  if (process.env.KUBERNETES_SERVICE_HOST) config.loadFromCluster();
-  else config.loadFromDefault();
+  config.loadFromCluster();
   return config;
 }
 

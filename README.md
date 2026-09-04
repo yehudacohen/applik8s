@@ -1,12 +1,41 @@
 # applik8s
 
-`applik8s` lets you build applications on the Kubernetes control plane with TypeScript.
+`applik8s` lets you describe a distributed application as one typed TypeScript graph. Models, queries, events,
+jobs, workflows, actors, AI operations, infrastructure, authority, and acceptance journeys stay connected from
+authoring through deployment and operations.
 
-You write typed Kubernetes APIs and event listeners. `applik8s` compiles them into a WASM component, packages that component with a Rust operator host, and emits the Kubernetes YAML needed to install the whole thing into a cluster.
+## v0.9 candidate
 
-Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes events through a Rust operator host. Application servers and durable command processors compile into separate, inspectable Node workloads when the application graph requires them.
+The active line is v0.9. Start with the preview documentation in
+[`docs-site/src/content/docs/start-here.mdx`](docs-site/src/content/docs/start-here.mdx), or create the full
+Agentic Start product foundation:
 
-## v0.6 Flagship: Native Models and Live Applications
+```sh
+bun create applik8s my-agentic-product
+cd my-agentic-product
+bun run doctor
+bun run dev
+```
+
+Repository contributors can run the exact local candidate gate with:
+
+```sh
+bun run check:v09:ci
+```
+
+The maintained GuestBook is the smallest Kubernetes example, Chirp is the distributed portability pressure
+test, and Agentic Start is the generated SaaS product journey. Provider maturity is claimed per implementation;
+a passing local fixture does not imply cloud qualification. See [`goal.md`](goal.md),
+[`docs/v0.9-manifesto.md`](docs/v0.9-manifesto.md), and the generated
+[`docs/v0.9-public-contract.json`](docs/v0.9-public-contract.json).
+
+Kubernetes reconciliation closures compile to WASM components executed by the Rust operator host. Application
+servers, processors, and durable execution workers compile into separate inspectable workloads when the graph
+requires them. TypeKro and Alchemy own deployment ordering and lifecycle rather than an Applik8s shadow engine.
+
+## Historical release notes
+
+### v0.6 Flagship: Native Models and Live Applications
 
 v0.6 lets one Drizzle table remain the relational schema authority while gaining derived ArkType contracts and a common Applik8s model facet. Applications can declare trusted context, PostgreSQL RLS, bounded queries, durable replayable streams, ClickHouse projections, authenticated subscriptions, and browser stores from the same inspectable application graph. Generated migrations, gateways, projection workers, provider infrastructure, RBAC, and network policy remain explicit deployment artifacts.
 

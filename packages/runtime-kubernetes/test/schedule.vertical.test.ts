@@ -9,6 +9,17 @@ import {
 } from '../src/index.js';
 
 describe('Kubernetes function-native Scheduler', () => {
+  test('fails closed instead of adopting ambient kubeconfig', async () => {
+    await expect(createKubernetesApplicationScheduleRuntime({
+      applicationId: 'demo',
+      environmentId: 'test',
+      namespace: 'demo',
+      admissionEndpoint: 'http://demo.demo.svc/internal',
+      authorizationSecretName: 'demo-internal-operation',
+      stateAuthority: createDeterministicApplicationScheduleStateAuthority(),
+    })).rejects.toThrow(/explicit kubeConfig or inCluster: true/u);
+  });
+
   test('renders a bounded fixed CronJob with stable provider execution identity', () => {
     const cronJob = kubernetesApplicationScheduleCronJob({
       applicationId: 'demo',

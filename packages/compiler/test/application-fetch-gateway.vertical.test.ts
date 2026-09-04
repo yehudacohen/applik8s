@@ -987,6 +987,9 @@ describe("application host Fetch gateway", () => {
 			];
 		expect(source).toContain("allowedNamespaces: [requiredRuntimeNamespace()]");
 		expect(source).toContain(
+			"...(localResourceClients ? {} : { inCluster: true })",
+		);
+		expect(source).toContain(
 			"const runtimeNamespace = process.env.APPLIK8S_NAMESPACE",
 		);
 		expect(source).toContain("commands: [{");

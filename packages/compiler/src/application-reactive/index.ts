@@ -1902,6 +1902,7 @@ ${kubernetesQueries.length > 0 ? `const localResourceClients = process.env.APPLI
   : undefined;` : `const localResourceClients = undefined;`}
 const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubernetesGateway({
   ...(localResourceClients ?? {}),
+  ...(localResourceClients ? {} : { inCluster: true }),
   authenticate: async (request, operation) => operation?.kind === 'query' ? admitQuery(request, operation, operation.input) : admitRequest(request),
   cursorSecret,
   queries: [${kubernetesQueryDeclarations}],

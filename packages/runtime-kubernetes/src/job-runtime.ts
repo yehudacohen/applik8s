@@ -44,7 +44,9 @@ export interface KubernetesApplicationJobDispatcherOptions {
   readonly ttlSecondsAfterFinished?: number;
   readonly terminationGracePeriodSeconds?: number;
   readonly kubeConfig?: KubeConfig;
-  /** Test/provider seam; ordinary callers supply a KubeConfig or use ambient configuration. */
+  /** Explicitly select the pod's projected Kubernetes identity. Never reads ambient kubeconfig. */
+  readonly inCluster?: true;
+  /** Test/provider seam; ordinary callers supply a KubeConfig or explicitly select in-cluster identity. */
   readonly api?: Pick<BatchV1Api, 'createNamespacedJob' | 'readNamespacedJob' | 'deleteNamespacedJob'>;
 }
 
@@ -194,11 +196,18 @@ export async function createKubernetesApplicationJobDispatcher(
   if (!api) {
     // static-import-exception: Kubernetes is loaded only when this provider is selected.
     const kubernetes = await import('@kubernetes/client-node');
-    const kubeConfig = options.kubeConfig ?? new kubernetes.KubeConfig();
-    if (!options.kubeConfig) {
-      if (process.env.KUBERNETES_SERVICE_HOST) kubeConfig.loadFromCluster();
-      else kubeConfig.loadFromDefault();
+    if (options.kubeConfig && options.inCluster) {
+      throw new Error(
+        'Kubernetes Job dispatcher must select exactly one explicit client source.',
+      );
     }
+    if (!options.kubeConfig && !options.inCluster) {
+      throw new Error(
+        'Kubernetes Job dispatcher requires an explicit kubeConfig or inCluster: true; ambient kubeconfig is never adopted.',
+      );
+    }
+    const kubeConfig = options.kubeConfig ?? new kubernetes.KubeConfig();
+    if (options.inCluster) kubeConfig.loadFromCluster();
     api = kubeConfig.makeApiClient(kubernetes.BatchV1Api);
   }
   const batch = api;

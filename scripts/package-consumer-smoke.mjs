@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1404,6 +1404,69 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   await execFileAsync(executable, ['build', operatorPath, '--out-dir', outDir, '--operator-name', 'packed-smoke'], { cwd: consumerDir, maxBuffer: 20 * 1024 * 1024 });
   await readFile(join(outDir, 'operator-manifest.json'));
   console.log('Package consumer smoke: clean-directory CLI build passed.');
+
+  const publicCreateTarget = join(consumerDir, 'packed-public-agentic-start');
+  const fakeBinDir = join(workDir, 'fake-bin');
+  await mkdir(fakeBinDir, { recursive: true });
+  const fakeBunx = join(fakeBinDir, 'bunx');
+  await writeFile(fakeBunx, `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const args = process.argv.slice(2);
+const targetIndex = args.indexOf('--target-dir');
+if (targetIndex < 0 || !args[targetIndex + 1]) throw new Error('missing --target-dir');
+const target = args[targetIndex + 1];
+mkdirSync(join(target, 'src', 'routes'), { recursive: true });
+writeFileSync(join(target, 'package.json'), JSON.stringify({
+  name: 'upstream-scaffold',
+  type: 'module',
+  scripts: { dev: 'vite --port 3000' },
+  dependencies: {
+    '@tanstack/react-start': '1.168.28',
+    '@tanstack/react-router': '1.168.28',
+    react: '^19.1.0',
+  },
+}) + '\\n');
+writeFileSync(join(target, 'src', 'routes', 'index.tsx'), 'export const upstreamScaffold = true;\\n');
+writeFileSync(join(target, 'src', 'routes', '__root.tsx'), 'export const upstreamRoot = true;\\n');
+writeFileSync(join(target, 'src', 'router.tsx'), 'export const upstreamRouter = true;\\n');
+`);
+  await chmod(fakeBunx, 0o755);
+  const createExecutable = join(binDir, 'create-applik8s');
+  await symlink(
+    join(consumerModules, 'create-applik8s', 'dist', 'bin.js'),
+    createExecutable,
+  );
+  await execFileAsync(
+    createExecutable,
+    [publicCreateTarget, '--no-install'],
+    {
+      cwd: consumerDir,
+      env: {
+        ...process.env,
+        PATH: `${fakeBinDir}:${process.env.PATH ?? ''}`,
+      },
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  const publicCreateManifest = JSON.parse(
+    await readFile(join(publicCreateTarget, 'package.json'), 'utf8'),
+  );
+  const publicCreateLineage = JSON.parse(
+    await readFile(join(publicCreateTarget, '.applik8s-start.json'), 'utf8'),
+  );
+  if (
+    publicCreateManifest.dependencies?.['@applik8s/start-agentic'] !== '^0.9.0'
+    || publicCreateManifest.devDependencies?.['@applik8s/cli'] !== '^0.9.0'
+    || publicCreateLineage.startVersion !== '0.9.0'
+    || publicCreateLineage.generatorVersion !== '0.9.0'
+    || publicCreateLineage.packageVersion !== '^0.9.0'
+  ) {
+    throw new Error(
+      'The packed public create-applik8s CLI did not target the current v0.9 package line.',
+    );
+  }
+  console.log('Package consumer smoke: packed public create-applik8s default targets v0.9.');
 
   const agenticStartTarget = join(consumerDir, 'packed-agentic-start');
   // static-import-exception: load the packed artifact from the isolated consumer node_modules tree, not workspace source.

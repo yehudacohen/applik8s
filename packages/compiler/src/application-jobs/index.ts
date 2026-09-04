@@ -284,6 +284,7 @@ const queryBatchRuntime${index} = createPostgresApplicationQueryBatchRuntime({
   image: requiredEnv('APPLIK8S_JOB_IMAGE'),
   serviceAccountName: ${JSON.stringify(contract.serviceAccountName)},
   workerCommand: ['node', '/app/job-controller.mjs'],
+  inCluster: true,
   store,
   maximumConcurrency: ${contract.maximumConcurrency},
   resultRetentionSeconds: ${contract.resultRetentionSeconds},

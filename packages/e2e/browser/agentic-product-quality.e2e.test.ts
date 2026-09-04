@@ -23,28 +23,28 @@ async function gotoProductRoute(
 }
 
 const representativeRoutes = [
-  '/',
-  '/sign-in?returnTo=%2Fapp',
-  '/sign-up',
-  '/recover',
-  '/verify',
-  '/app',
-  '/app/documents',
-  '/app/inbox',
-  '/app/artifacts',
-  '/app/agents',
-  '/app/knowledge',
-  '/app/integrations',
-  '/app/evaluations',
-  '/app/workspaces',
-  '/app/usage',
-  '/app/account',
-  '/app/billing',
-  '/app/setup',
-  '/app/operations',
-  '/admin',
-  '/admin/tenants',
-  '/admin/catalog',
+  { path: '/', heading: /Turn a conversation\s+into finished work\./u },
+  { path: '/sign-in?returnTo=%2Fapp', heading: 'Enter your workspace', admission: true },
+  { path: '/sign-up', heading: 'Create your account', admission: true },
+  { path: '/recover', heading: 'Recover your account', admission: true },
+  { path: '/verify', heading: 'Verify your identity', admission: true },
+  { path: '/app', heading: 'What should we accomplish?' },
+  { path: '/app/documents', heading: 'Documents' },
+  { path: '/app/inbox', heading: 'Inbox' },
+  { path: '/app/artifacts', heading: 'Artifacts' },
+  { path: '/app/agents', heading: 'Agents' },
+  { path: '/app/knowledge', heading: 'Knowledge' },
+  { path: '/app/integrations', heading: 'Integrations' },
+  { path: '/app/evaluations', heading: 'Evaluations' },
+  { path: '/app/workspaces', heading: 'Workspaces' },
+  { path: '/app/usage', heading: 'Usage' },
+  { path: '/app/account', heading: 'Account' },
+  { path: '/app/billing', heading: 'Plan, usage, and access' },
+  { path: '/app/setup', heading: 'Get this application ready to launch' },
+  { path: '/app/operations', heading: /operations$/u },
+  { path: '/admin', heading: 'Product control center' },
+  { path: '/admin/tenants', heading: 'Tenants' },
+  { path: '/admin/catalog', heading: 'Catalog' },
 ] as const;
 
 test.describe.configure({ mode: 'serial' });
@@ -52,7 +52,8 @@ test.describe.configure({ mode: 'serial' });
 test('keeps the representative product surface responsive and free of browser failures', async ({ browser, baseURL }) => {
   const failures: string[] = [];
 
-  for (const path of representativeRoutes) {
+  for (const route of representativeRoutes) {
+    const { path } = route;
     const context = await browser.newContext(baseURL ? { baseURL } : {});
     const page = await context.newPage();
     const routeFailures: string[] = [];
@@ -68,7 +69,7 @@ test('keeps the representative product surface responsive and free of browser fa
     });
 
     let admittedRedirect = false;
-    const publicAdmissionRoute = /^\/(?:sign-in|sign-up|recover|verify)(?:\?|$)/u.test(path);
+    const publicAdmissionRoute = 'admission' in route && route.admission;
     try {
       try {
         await page.goto(path, { waitUntil: 'domcontentloaded' });
@@ -87,13 +88,29 @@ test('keeps the representative product surface responsive and free of browser fa
         `${path} did not return a document`,
       ).toBeGreaterThan(0);
       expect(
-        documentStatuses.every(status => status < 500),
-        `${path} returned a server error: ${documentStatuses.join(', ')}`,
+        documentStatuses.every(status => status >= 200 && status < 400),
+        `${path} returned a non-successful document response: ${documentStatuses.join(', ')}`,
+      ).toBe(true);
+      const finalPath = new URL(page.url()).pathname.replace(/\/$/u, '') || '/';
+      const requestedPath = new URL(path, 'http://applik8s.invalid').pathname.replace(/\/$/u, '') || '/';
+      expect(
+        finalPath === requestedPath || (publicAdmissionRoute && finalPath === '/app'),
+        `${path} unexpectedly resolved to ${finalPath}`,
       ).toBe(true);
       await expect(page.locator('body')).not.toContainText('Internal Server Error');
       await expect(page.locator('body')).not.toContainText('Server Error');
+      await expect(page.locator('body')).not.toContainText('That page is not here');
       await expect(page.locator('main')).toHaveCount(1);
       await expect(page.locator('main')).toBeVisible();
+      if (!admittedRedirect) {
+        await expect(page.getByRole('heading', { level: 1, name: route.heading }).first()).toBeVisible({
+          timeout: 15_000,
+        });
+      } else {
+        await expect(page.getByRole('heading', { level: 1, name: 'What should we accomplish?' }).first()).toBeVisible({
+          timeout: 15_000,
+        });
+      }
       const overflow = await page.evaluate(() => ({
         viewport: document.documentElement.clientWidth,
         content: document.documentElement.scrollWidth,

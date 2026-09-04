@@ -13,6 +13,20 @@ interface InstallationStatus {
 }
 
 describe('typed Application installation client', () => {
+  it('does not adopt an ambient kubeconfig for the default transport', async () => {
+    const application = app('explicit-installation-client', {
+      controlPlaneNamespace: 'sites-control',
+      apiVersion: 'applications.example.test/v1alpha1',
+      kind: 'SiteInstallation',
+      spec: type({ name: 'string', replicas: 'number.integer >= 1' }),
+      status: type({ ready: 'boolean' }),
+    });
+
+    await expect(application.installation.connect({})).rejects.toThrow(
+      'requires kubeConfigPath or inCluster: true when no transport is injected; ambient kubeconfig is never adopted',
+    );
+  });
+
   it('supports create/get/require/list/update/watch and TypeKro-owned deletion through one typed contract', async () => {
     const application = app('managed-site', {
       controlPlaneNamespace: 'sites-control',

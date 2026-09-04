@@ -30,6 +30,15 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'The AI execution runtime may join AI, TanStack, operation, and authority contracts but must remain independent of infrastructure and deployment implementations.',
   },
   {
+    roots: ['packages/ml/src'],
+    forbidden: [
+      /^@kubernetes\//,
+      /^typekro(?:\/|$)/,
+      /^alchemy(?:\/|$)/,
+    ],
+    rationale: 'The ML module may use application-authoring contracts and the focused provider-extension entrypoint, but never infrastructure implementation packages.',
+  },
+  {
     roots: ['packages/deployment-contract/src'],
     forbidden: [/^node:/, /^@applik8s\/(?!core(?:\/|$))/, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
     rationale: 'Deployment contracts may consume portable core identities, guarantees, and Canonical JSON, but no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',
@@ -157,8 +166,22 @@ for (const rule of rules) {
     }
   }
 }
+const applicationUmbrella = await readFile('packages/applik8s/src/index.ts', 'utf8');
+// typecast: This checked literal list is the complete internal extension surface intentionally excluded from the application umbrella.
+for (const internalExtensionSymbol of [
+  'bindApplicationProviderDependencies',
+  'bindApplicationProviderOperation',
+] as const) {
+  if (applicationUmbrella.includes(internalExtensionSymbol)) {
+    failures.push(`packages/applik8s/src/index.ts exports ${internalExtensionSymbol}. Maintained modules must use @applik8s/applik8s/provider-extension-runtime; application authors must not see extension plumbing at the umbrella root.`);
+  }
+}
+const mlModule = await readFile('packages/ml/src/index.ts', 'utf8');
+if (!mlModule.includes("from '@applik8s/applik8s/provider-extension-runtime'")) {
+  failures.push('packages/ml/src/index.ts must import provider metadata seams from @applik8s/applik8s/provider-extension-runtime.');
+}
 if (failures.length > 0) throw new Error(`Module boundary violations:\n${failures.map((failure) => `- ${failure}`).join('\n')}`);
-console.log('Module boundaries: portable core, WASM operator surface, and v0.6 browser package rules passed.');
+console.log('Module boundaries: portable core, provider-extension, WASM operator, deployment, and browser package rules passed.');
 
 async function sourceFiles(path: string): Promise<string[]> {
   try {

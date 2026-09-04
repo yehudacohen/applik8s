@@ -27,6 +27,15 @@ const inputSchema = {
 };
 
 describe('generated Kubernetes application gateway', () => {
+  it('fails closed instead of adopting ambient kubeconfig', () => {
+    expect(() => createApplik8sKubernetesGateway({
+      authenticate: identity('tenant-a'),
+      cursorSecret: secret,
+    })).toThrow(
+      'requires an explicit kubeConfig, inCluster: true, or complete injected clients; ambient kubeconfig is never adopted',
+    );
+  });
+
   it('authorizes and idempotently creates a model before returning its authoritative snapshot', async () => {
     let stored: KubernetesObject | undefined;
     let commandAdmission: unknown;
