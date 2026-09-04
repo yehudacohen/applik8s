@@ -65,8 +65,8 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `2469d9e` before
-the current Saga slice. Completed foundations include concrete
+The last implementation commit on `codex/v0.9-semantic-completion` is
+`53aee0c3c6088104ec95628e41c52a2c3394b3f7`. Completed foundations include concrete
 provider planning, deployment migration proposals, journey declarations, the
 documentation site foundation, shared effect-safety primitives, Job vocabulary
 and runtime contracts, deterministic and durable PostgreSQL Job execution,
@@ -415,29 +415,43 @@ cleanly removed application identity to be safely reused without weakening
 strategy-conflict protection. Focused regression suites and the complete v0.9
 static candidate aggregate pass with these corrections.
 
-The contract-mode v0.9 scorecard has 25 gates: 19 passing, two intentionally
-non-release-blocking provider-expansion lanes blocked, two exact-candidate
-foundation/product gates awaiting manifest promotion, and two credentialed
-release lanes blocked. The public-contract inventory is
-`candidate-review-ready`, but the maintainer-owned freeze remains open and must
-not be promoted implicitly. The exact released-v0.7.1 baseline is now recorded,
-and a clean committed-candidate OrbStack migration proved fenced ownership
-handoff, physical UID preservation, readiness, and TypeKro-ordered teardown.
-The same candidate also passed the complete generated Agentic Start product
-journey. Their authoritative manifests still need promotion after maintainer
-approval, after which both exact-candidate receipts must be regenerated from
-the final commit. The managed research journey remains blocked on explicit
-OpenRouter credential authority, and real AWS lifecycle qualification remains
-blocked on explicit account, region, credentials, and cost/destructive-action
-authority. Multi-authority event federation and a genuinely independent second
-Kubernetes cluster remain truthful non-release-blocking beta lanes. Chirp's
-production Kubernetes lifecycle and the named current-cluster capability are
-passing. Credentials are not copied into OrbStack without explicit destination
-authorization.
+### 2026-09-04 stopping-point checkpoint
 
-The npm audit gate was not executed because its registry request transmits the
-candidate dependency graph and execution authority was not granted. This is an
-explicit evidence gap, not a hidden pass.
+The exact implementation candidate
+`53aee0c3c6088104ec95628e41c52a2c3394b3f7` passed the full
+`check:v09:ci` aggregate passes at that SHA, including workspace and example
+typechecks, lint and boundary checks, every implemented TypeScript test shard,
+the documentation site, public-contract inventory, package publish dry-runs,
+66-package/109-entrypoint clean-consumer smoke, performance/history checks, and
+the complete Rust/ComponentizeJS/Wasmtime host suite.
+
+Four maintained-provider receipts were regenerated from that exact candidate:
+
+- managed models against disposable native PostgreSQL: 15 tests passed;
+- query batching against disposable native PostgreSQL: 5 tests passed;
+- durable research evidence against disposable native PostgreSQL: 1 live test
+  passed;
+- the OrbStack Hatchet Saga vertical: 3 live scenarios passed, including
+  schedule repair, worker replacement, fencing, compensation, intervention,
+  cancellation, and TypeKro-ordered cleanup.
+
+This checkpoint documentation follows that implementation commit, so all live
+receipts must be refreshed again from the eventual final release SHA. The
+contract-mode scorecard currently contains 27 gates and reports 7 passing.
+That count is intentionally conservative: exact-candidate receipts for finite
+Jobs, the named Kubernetes cluster, the code agent, Builder, v0.7.1 migration,
+and the Agentic Start product exist but predate the current SHA and must be
+rerun before promotion. The public-contract inventory remains
+`candidate-review-ready`; its maintainer-owned freeze is still open.
+
+Four lanes are explicitly blocked: multi-authority application-event federation
+and an independent second Kubernetes cluster are truthful non-release-blocking
+beta expansion lanes; the managed research/Chirp Kubernetes journey requires an
+`OPENROUTER_API_KEY` in this worktree's `.env`; and production AWS qualification
+requires fresh Skates Labs account authentication plus the already specified
+cost and destructive-action authority. No credential was read, copied, or
+printed. The npm dependency audit and final release-mode scorecard have not yet
+been run for this candidate.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
