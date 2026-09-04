@@ -12,8 +12,8 @@ import {
 } from 'typekro/harbor';
 import { namespace } from 'typekro/kubernetes';
 import {
-  rookCephOperatorBootstrap,
   rookCephExternalOperatorSingleNodePlatform,
+  rookCephOperatorBootstrap,
   rookCephSingleNodePlatform,
   rookObjectStorageClaim,
 } from 'typekro/rook';
@@ -79,6 +79,30 @@ const controlNamespaceFactory = controlNamespaceComposition.factory('direct', {
   timeout: 120_000,
   kubeConfig,
 });
+const platformNamespaceComposition = kubernetesComposition(
+  {
+    name: 'applik8s-orbstack-rook-platform-namespace',
+    kind: 'Applik8sOrbStackRookPlatformNamespace',
+    spec: type({ name: 'string' }),
+    status: type({ ready: 'boolean' }),
+  },
+  () => {
+    namespace({
+      id: 'platformNamespace',
+      metadata: {
+        name: identities.platformNamespace,
+        labels: { 'applik8s.dev/release-fixture': 'orbstack-rook-platform' },
+      },
+    });
+    return { ready: true };
+  },
+);
+const platformNamespaceFactory = platformNamespaceComposition.factory('direct', {
+  namespace: identities.platformNamespace,
+  waitForReady: true,
+  timeout: 120_000,
+  kubeConfig,
+});
 const obsoleteOwnedPlatformFactory =
   rookCephSingleNodePlatform.factory('kro', {
     namespace: identities.platformControlNamespace,
@@ -115,6 +139,14 @@ try {
   if (controlNamespace.status.ready !== true) {
     throw new Error(
       `Rook platform control namespace did not report ready: ${JSON.stringify(controlNamespace.status)}`,
+    );
+  }
+  const platformNamespace = await platformNamespaceFactory.deploy({
+    name: 'namespace',
+  });
+  if (platformNamespace.status.ready !== true) {
+    throw new Error(
+      `Rook platform namespace did not report ready: ${JSON.stringify(platformNamespace.status)}`,
     );
   }
 
@@ -248,6 +280,7 @@ try {
     operatorFactory.dispose(),
     obsoleteOwnedPlatformFactory.dispose(),
     controlNamespaceFactory.dispose(),
+    platformNamespaceFactory.dispose(),
     platformFactory.dispose(),
     claimFactory.dispose(),
   ]);
