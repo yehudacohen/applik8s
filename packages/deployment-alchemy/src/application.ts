@@ -102,9 +102,11 @@ export async function createApplicationAlchemyGraphDeployment<
       // An interrupted Alchemy transaction can leave a live Kubernetes object
       // while its declaration is still `creating`; Alchemy then has no
       // committed provider state from which to invoke delete. TypeKro remains
-      // the lifecycle authority, so converge every composition instance to
-      // absence first, in reverse dependency order, and let Alchemy remove the
-      // remaining external resources and durable state afterward.
+      // the lifecycle authority, so converge composition instances to absence
+      // first, in reverse dependency order, and let Alchemy remove remaining
+      // external resources and durable state afterward. Application-owned
+      // Namespaces are deliberately excluded: they are containment boundaries
+      // whose external-provider dependents must be deleted by Alchemy first.
       await deleteApplicationTypeKroInstances(
         options.graph,
         adapted,
@@ -129,6 +131,17 @@ export async function deleteApplicationTypeKroInstances(
   ]);
   const ordered = [...orderedTypeKroGroups(graph, adapted)].reverse();
   for (const group of ordered) {
+    const node = graph.nodes.find(
+      (candidate) => candidate.id === group.deploymentNodeId,
+    );
+    if (
+      node?.kind === "kubernetesDirect" &&
+      node.spec.compositionId === "applik8s-namespace" &&
+      node.lifecycle.ownership === "application" &&
+      node.lifecycle.deletion === "delete"
+    ) {
+      continue;
+    }
     const binding = bindings.get(group.deploymentNodeId);
     if (!binding) {
       throw new Error(

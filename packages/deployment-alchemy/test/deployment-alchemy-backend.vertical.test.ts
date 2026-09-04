@@ -130,6 +130,65 @@ describe("Alchemy deployment backend", () => {
     expect(calls).toEqual(["root:direct", "provider:direct"]);
   });
 
+  it("leaves application-owned Namespace teardown to Alchemy after external dependents", async () => {
+    const calls: string[] = [];
+    const graph = deploymentGraph();
+    const scope = graph.nodes[0]?.scope;
+    if (!scope) throw new Error("Deployment graph fixture is missing its root.");
+    const namespaceNode: ApplicationKubernetesDirectDeploymentNode = {
+      id: "direct.namespace.workload",
+      kind: "kubernetesDirect",
+      contractVersion: 1,
+      source: {},
+      provider: { interface: "Namespace", implementation: "typekro", version: "1" },
+      scope,
+      capabilities: { strategies: ["direct"], alchemy: true },
+      configurationDigest: digestApplicationDeploymentValue({ name: "workload" }),
+      inputs: {},
+      outputs: [],
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        compositionId: "applik8s-namespace",
+        reason: "Contain application and external-provider resources.",
+        configuration: { name: "workload" },
+        ownership: "application",
+        deletion: "delete",
+      },
+    };
+    const orderedGraph: ApplicationDeploymentGraph = {
+      ...graph,
+      nodes: [...graph.nodes, namespaceNode],
+      edges: [{
+        from: namespaceNode.id,
+        to: "kubernetes.application",
+        relationship: "requiresReady",
+      }],
+    };
+    const binding = (id: string) => ({
+      compositionId: id,
+      inspect: () => ({}) as never,
+      plan: () => ({}) as never,
+      declarations: async () => [],
+      deleteInstance: async (strategy: "direct" | "kro") => { calls.push(`${id}:${strategy}`); },
+    });
+
+    await deleteApplicationTypeKroInstances(
+      orderedGraph,
+      {
+        root: { deploymentNodeId: "kubernetes.application", strategy: "direct" },
+        direct: [{ deploymentNodeId: namespaceNode.id, strategy: "direct" }],
+      } as never,
+      binding("root"),
+      { [namespaceNode.id]: binding("namespace") },
+    );
+
+    expect(calls).toEqual(["root:direct"]);
+  });
+
   it("fails closed when a destroy transaction leaves resumable state behind", () => {
     expect(() => assertApplicationAlchemyDestroyState([])).not.toThrow();
     expect(() =>

@@ -49,6 +49,8 @@ export interface ApplicationHarborProjectProps {
   readonly deletionPolicy: "delete" | "retain";
   readonly purgeRepositories?: boolean;
   readonly deletionTimeoutMs?: number;
+  /** Alchemy dependency handles; values contain no credential material. */
+  readonly prerequisites?: readonly unknown[];
 }
 
 export interface ApplicationHarborProjectAttributes {

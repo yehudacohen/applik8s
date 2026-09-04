@@ -279,6 +279,7 @@ export function createApplicationAlchemyDeployment(
               project,
               options.graph,
               options.artifactRegistry,
+              namespaceHandles,
             ),
           );
           // typecast: Alchemy resolves resource Outputs before returning from

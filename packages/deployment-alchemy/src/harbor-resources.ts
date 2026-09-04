@@ -10,6 +10,7 @@ import type {
 import type {
   ApplicationContainerArtifactRegistry,
 } from "@applik8s/deployment-provider-oci";
+import * as Output from "alchemy/Output";
 
 export function harborProjectNodes(
   graph: ApplicationDeploymentGraph,
@@ -34,6 +35,7 @@ export function harborProjectProps(
   node: ApplicationExternalProviderDeploymentNode,
   graph: ApplicationDeploymentGraph,
   registry: ApplicationContainerArtifactRegistry | undefined,
+  namespaceHandles: readonly unknown[] = [],
 ): ApplicationHarborProjectProps {
   if (registry?.type !== "harbor") {
     throw new Error(
@@ -120,6 +122,16 @@ export function harborProjectProps(
       projectLifecycle?.deletionPolicy === "delete" ? "delete" : "retain",
     purgeRepositories: projectLifecycle?.purgeRepositories === true,
     ...(deletionTimeoutMs ? { deletionTimeoutMs } : {}),
+    ...(namespaceHandles.length > 0
+      ? {
+          // typecast: erase heterogeneous namespace handles only at Alchemy's scheduling boundary.
+          prerequisites: Output.all(
+            // typecast: each opaque provider handle becomes an ordering-only Alchemy Output.
+            ...namespaceHandles.map((handle) => Output.of(handle as never)),
+            // typecast: collapse Alchemy's heterogeneous Output tuple to the provider-neutral prerequisite input.
+          ) as never,
+        }
+      : {}),
   };
 }
 
