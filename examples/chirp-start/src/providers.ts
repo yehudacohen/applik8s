@@ -462,7 +462,9 @@ export const productionKubernetesProfile = app.profile(
       database: 'chirp',
       namespace: profileNamespace,
       ownership: 'direct-provisioned',
-      lifecycle: { deletionPolicy: 'retain' },
+      lifecycle: {
+        deletionPolicy: app.installation.spec.lifecycle.databaseDeletion,
+      },
       storage: { size: '100Gi' },
     });
     const events = EventLog.jetStream({

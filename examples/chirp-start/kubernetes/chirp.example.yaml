@@ -16,10 +16,12 @@ spec:
     analytics: true
     media: true
   lifecycle:
-    # This disposable local installation owns its per-installation Harbor
-    # project. Dedicated sites should retain it until backup/export policy has
-    # completed and been reviewed.
-    databaseDeletion: retain
+    # This checked-in fixture is a disposable, repeatable local installation:
+    # teardown removes both the authoritative database and rebuildable
+    # analytical state so a later qualification cannot combine a retained
+    # stream frontier with a fresh projection store. Dedicated sites should
+    # retain their database until backup/export policy has completed.
+    databaseDeletion: delete
     registryProjectDeletion: delete
     purgeRegistryRepositories: true
   backup:

@@ -71,6 +71,14 @@ assert(
   'Chirp production profiles must preserve the same qualified semantic capability set.',
 );
 const providerExports = (plan) => new Set(plan.implementations.map((implementation) => implementation.identity.provider.export));
+const kubernetesDatabase = kubernetesPlan?.implementations.find(
+  (implementation) => implementation.identity.provider.export === 'Database.postgres',
+);
+assert(
+  kubernetesDatabase?.configuration?.lifecycle?.deletionPolicy
+    === '${schema.spec.lifecycle.databaseDeletion}',
+  'Chirp production-kubernetes must keep database deletion under the authored installation lifecycle instead of hard-coding retention in the assembly profile.',
+);
 for (const expected of [
   'ApplicationHost.kubernetes',
   'Certificate.certManager',
@@ -725,7 +733,7 @@ assert(singletonInstances.some(({ source }) => source.includes('kind: ClickHouse
 const exampleInstallation = await readFile(join(example, 'kubernetes/chirp.example.yaml'), 'utf8');
 assert(exampleInstallation.includes('kind: ChirpInstallation') && exampleInstallation.includes('namespace: chirp-control'), 'Chirp must ship an explicit control-plane installation example.');
 assert(exampleInstallation.includes('registryProjectDeletion: delete') && exampleInstallation.includes('purgeRegistryRepositories: true'), 'The disposable local example must make its destructive Harbor lifecycle policy explicit.');
-assert(exampleInstallation.includes('databaseDeletion: retain') && exampleInstallation.includes('retentionPolicy: 14d'), 'The local example must make retained PostgreSQL data and its backup window explicit.');
+assert(exampleInstallation.includes('databaseDeletion: delete') && exampleInstallation.includes('retentionPolicy: 14d'), 'The disposable local example must delete authoritative and rebuildable stores coherently while keeping its configured backup window explicit.');
 assert(exampleInstallation.includes('nodePort: 30080'), 'The local installation example must choose its collision domain explicitly.');
 assert(exampleInstallation.includes('mode: node-port'), 'The local installation example must select its exposure transport through typed desired state.');
 const packageManifest = await json(join(example, 'package.json'));
