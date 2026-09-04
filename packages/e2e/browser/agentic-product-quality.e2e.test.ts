@@ -24,10 +24,10 @@ async function gotoProductRoute(
 
 const representativeRoutes = [
   { path: '/', heading: /Turn a conversation\s+into finished work\./u },
-  { path: '/sign-in?returnTo=%2Fapp', heading: 'Enter your workspace', admission: true },
-  { path: '/sign-up', heading: 'Create your account', admission: true },
-  { path: '/recover', heading: 'Recover your account', admission: true },
-  { path: '/verify', heading: 'Verify your identity', admission: true },
+  { path: '/sign-in?returnTo=%2Fapp', heading: 'Enter your workspace', authenticatedRedirect: true },
+  { path: '/sign-up', heading: 'Create your account', authenticatedRedirect: true },
+  { path: '/recover', heading: 'Recover your account' },
+  { path: '/verify', heading: 'Verify your identity' },
   { path: '/app', heading: 'What should we accomplish?' },
   { path: '/app/documents', heading: 'Documents' },
   { path: '/app/inbox', heading: 'Inbox' },
@@ -74,19 +74,20 @@ test('keeps the representative product surface responsive and free of browser fa
     });
 
     let admittedRedirect = false;
-    const publicAdmissionRoute = 'admission' in route && route.admission;
+    const authenticatedRedirect = 'authenticatedRedirect' in route
+      && route.authenticatedRedirect;
     try {
       try {
         await page.goto(path, { waitUntil: 'domcontentloaded' });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
-        if (!publicAdmissionRoute || !/(?:ERR_ABORTED|interrupted by another navigation)/u.test(message)) {
+        if (!authenticatedRedirect || !/(?:ERR_ABORTED|interrupted by another navigation)/u.test(message)) {
           throw cause;
         }
         await page.waitForURL(isAuthenticatedProductPath);
         admittedRedirect = true;
       }
-      if (publicAdmissionRoute && !admittedRedirect) {
+      if (authenticatedRedirect && !admittedRedirect) {
         // The qualification deployment supplies its local authenticated
         // principal. Admission pages may render their SSR heading briefly,
         // but their settled contract is to redirect that principal into the
@@ -94,7 +95,7 @@ test('keeps the representative product surface responsive and free of browser fa
         await page.waitForURL(isAuthenticatedProductPath, { timeout: 15_000 });
         admittedRedirect = true;
       }
-      admittedRedirect ||= publicAdmissionRoute
+      admittedRedirect ||= authenticatedRedirect
         && isAuthenticatedProductPath(new URL(page.url()));
       expect(
         documentStatuses.length,
@@ -107,7 +108,7 @@ test('keeps the representative product surface responsive and free of browser fa
       const finalPath = new URL(page.url()).pathname.replace(/\/$/u, '') || '/';
       const requestedPath = new URL(path, 'http://applik8s.invalid').pathname.replace(/\/$/u, '') || '/';
       expect(
-        finalPath === requestedPath || (publicAdmissionRoute && isAuthenticatedProductPath(new URL(page.url()))),
+        finalPath === requestedPath || (authenticatedRedirect && isAuthenticatedProductPath(new URL(page.url()))),
         `${path} unexpectedly resolved to ${finalPath}`,
       ).toBe(true);
       await expect(page.locator('body')).not.toContainText('Internal Server Error');
