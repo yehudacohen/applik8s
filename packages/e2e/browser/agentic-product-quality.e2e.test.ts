@@ -47,6 +47,11 @@ const representativeRoutes = [
   { path: '/admin/catalog', heading: 'Catalog' },
 ] as const;
 
+function isAuthenticatedProductPath(url: URL): boolean {
+  const path = url.pathname.replace(/\/$/u, '') || '/';
+  return path === '/app' || path.startsWith('/app/');
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test('keeps the representative product surface responsive and free of browser failures', async ({ browser, baseURL }) => {
@@ -78,20 +83,24 @@ test('keeps the representative product surface responsive and free of browser fa
         if (!publicAdmissionRoute || !/(?:ERR_ABORTED|interrupted by another navigation)/u.test(message)) {
           throw cause;
         }
-        await page.waitForURL(url => url.pathname === '/app');
+        await page.waitForURL(isAuthenticatedProductPath);
         admittedRedirect = true;
       }
       if (publicAdmissionRoute && !admittedRedirect) {
-        await Promise.race([
-          page.waitForURL(url => url.pathname === '/app', { timeout: 15_000 }),
+        const renderedDestination = await Promise.race([
+          page.getByRole('heading', { level: 1, name: 'What should we accomplish?' }).first().waitFor({
+            state: 'visible',
+            timeout: 15_000,
+          }).then(() => 'authenticated' as const),
           page.getByRole('heading', { level: 1, name: route.heading }).first().waitFor({
             state: 'visible',
             timeout: 15_000,
-          }),
+          }).then(() => 'admission' as const),
         ]);
+        admittedRedirect = renderedDestination === 'authenticated';
       }
       admittedRedirect ||= publicAdmissionRoute
-        && new URL(page.url()).pathname === '/app';
+        && isAuthenticatedProductPath(new URL(page.url()));
       expect(
         documentStatuses.length,
         `${path} did not return a document`,
@@ -103,7 +112,7 @@ test('keeps the representative product surface responsive and free of browser fa
       const finalPath = new URL(page.url()).pathname.replace(/\/$/u, '') || '/';
       const requestedPath = new URL(path, 'http://applik8s.invalid').pathname.replace(/\/$/u, '') || '/';
       expect(
-        finalPath === requestedPath || (publicAdmissionRoute && finalPath === '/app'),
+        finalPath === requestedPath || (publicAdmissionRoute && isAuthenticatedProductPath(new URL(page.url()))),
         `${path} unexpectedly resolved to ${finalPath}`,
       ).toBe(true);
       await expect(page.locator('body')).not.toContainText('Internal Server Error');
