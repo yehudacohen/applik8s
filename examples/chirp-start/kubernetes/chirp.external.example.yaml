@@ -17,6 +17,7 @@ spec:
     media: true
   lifecycle:
     databaseDeletion: retain
+    objectStorageDeletion: retain
     registryProjectDeletion: retain
     purgeRegistryRepositories: false
   backup:

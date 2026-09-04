@@ -19,6 +19,7 @@ spec:
     # This disposable qualification installation deliberately proves complete
     # Alchemy/TypeKro teardown without touching the retained `chirp` fixture.
     databaseDeletion: delete
+    objectStorageDeletion: delete
     registryProjectDeletion: delete
     purgeRegistryRepositories: true
   backup:

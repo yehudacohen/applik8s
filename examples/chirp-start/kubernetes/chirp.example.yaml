@@ -22,6 +22,9 @@ spec:
     # stream frontier with a fresh projection store. Dedicated sites should
     # retain their database until backup/export policy has completed.
     databaseDeletion: delete
+    # Retained OBC data needs a separately retained namespace/lifecycle owner.
+    # This disposable qualification therefore removes its fixed bucket too.
+    objectStorageDeletion: delete
     registryProjectDeletion: delete
     purgeRegistryRepositories: true
   backup:

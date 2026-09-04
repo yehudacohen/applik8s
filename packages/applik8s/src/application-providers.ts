@@ -2764,7 +2764,7 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
     ) {
       throw new Error('ObjectStorage.rookCeph(...) requires non-empty namespace, bucket, and endpoint values.');
     }
-    if (!options.storageClassName.trim()) {
+    if (!applicationProviderRequiredString(options.storageClassName)) {
       throw new Error('ObjectStorage.rookCeph({ storageClassName }) must not be empty.');
     }
     const provider: ApplicationS3ObjectStorageProvider = {

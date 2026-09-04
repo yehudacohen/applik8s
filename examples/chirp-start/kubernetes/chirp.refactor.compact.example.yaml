@@ -20,6 +20,7 @@ spec:
     media: false
   lifecycle:
     databaseDeletion: delete
+    objectStorageDeletion: delete
     registryProjectDeletion: delete
     purgeRegistryRepositories: true
   backup:

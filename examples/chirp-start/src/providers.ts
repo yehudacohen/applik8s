@@ -522,8 +522,14 @@ export const productionKubernetesProfile = app.profile(
         namespace: profileNamespace,
         name: 'chirp-media',
       },
-      storageClassName: 'ceph-bucket-retain',
-      retention: 'retain',
+      storageClassName: app.select(
+        app.installation.spec.lifecycle.objectStorageDeletion,
+        { delete: 'ceph-bucket-delete', default: 'ceph-bucket-retain' },
+      ),
+      retention: app.select(
+        app.installation.spec.lifecycle.objectStorageDeletion,
+        { delete: 'delete', default: 'retain' },
+      ),
     });
     const historyDataset = Lakehouse.objectStorageDataset({
       storage: objects,

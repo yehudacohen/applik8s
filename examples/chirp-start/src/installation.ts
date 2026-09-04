@@ -73,6 +73,7 @@ const CommonInstallation = type({
   },
   lifecycle: {
     databaseDeletion: "'retain' | 'delete'",
+    objectStorageDeletion: "'retain' | 'delete'",
     registryProjectDeletion: "'retain' | 'delete'",
     purgeRegistryRepositories: 'boolean',
   },

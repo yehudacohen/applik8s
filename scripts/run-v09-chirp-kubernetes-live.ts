@@ -12,6 +12,7 @@ let cleanupFailure: unknown;
 
 try {
   await requireAbsentRootInstance();
+  await run(['run', 'scripts/prepare-v09-chirp-rook-storage.ts']);
   deploymentAttempted = true;
   await run(['run', 'deploy:v06:chirp-twice']);
   await run([

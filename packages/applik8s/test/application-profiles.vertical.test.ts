@@ -20,6 +20,7 @@ import {
   event,
   HttpExposure,
   IndexStore,
+  KubernetesCluster,
   ObjectStorage,
   Queue,
   Scheduler,
@@ -107,6 +108,50 @@ describe('application deployment profiles', () => {
       }),
     });
     expect(validateApplicationGraph(applicationGraphFor(application.composition)!)).toEqual([]);
+  });
+
+  it('keeps Rook bucket reclamation and retention under one typed installation policy', () => {
+    const application = app('selected-rook-retention', {
+      apiVersion: 'applications.example.test/v1alpha1',
+      kind: 'SelectedRookRetentionInstallation',
+      spec: type({ objectStorageDeletion: "'retain' | 'delete'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    const deletion = application.installation.spec.objectStorageDeletion;
+    const cluster = KubernetesCluster.current({ namespace: 'application' });
+    application.provide(ObjectStorage, ObjectStorage.rookCeph({
+      cluster,
+      namespace: 'application',
+      bucket: 'application-objects',
+      endpoint: 'http://rook-ceph-rgw.rook-ceph.svc:80',
+      credentialsSecret: {
+        apiVersion: 'v1', kind: 'Secret', namespace: 'application', name: 'application-objects',
+      },
+      storageClassName: application.select(deletion, {
+        delete: 'ceph-bucket-delete',
+        default: 'ceph-bucket-retain',
+      }),
+      retention: application.select(deletion, {
+        delete: 'delete',
+        default: 'retain',
+      }),
+    }));
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'provider' && node.interface === 'ObjectStorage',
+    );
+    expect(provider).toMatchObject({
+      config: {
+        objectStorage: {
+          provisioning: {
+            storageClassName:
+              '${(schema.spec.objectStorageDeletion) == "delete" ? ("ceph-bucket-delete") : ("ceph-bucket-retain")}',
+          },
+          retention:
+            '${(schema.spec.objectStorageDeletion) == "delete" ? ("delete") : ("retain")}',
+        },
+      },
+    });
   });
 
   it('rejects ambiguous StructuredGeneration credential ownership', () => {

@@ -77,6 +77,9 @@ const kubernetesDatabase = kubernetesPlan?.implementations.find(
 const kubernetesRegistry = kubernetesPlan?.implementations.find(
   (implementation) => implementation.identity.provider.export === 'ContainerRegistry.harbor',
 );
+const kubernetesObjects = kubernetesPlan?.implementations.find(
+  (implementation) => implementation.identity.provider.export === 'ObjectStorage.rookCeph',
+);
 assert(
   kubernetesDatabase?.configuration?.clusterName === 'chirp-models'
     && kubernetesDatabase.configuration.lifecycle?.deletionPolicy
@@ -88,6 +91,13 @@ assert(
     && kubernetesRegistry.configuration.management.pullSecretName === 'chirp-registry-pull'
     && kubernetesRegistry.configuration.endpoint?.kind === 'kubernetes-node-port',
   'Chirp production-kubernetes must manage its Harbor project and purpose-scoped credentials so a clean installation does not depend on pre-existing workload-namespace Secrets.',
+);
+assert(
+  kubernetesObjects?.configuration?.provisioning?.storageClassName
+    === '${(schema.spec.lifecycle.objectStorageDeletion) == "delete" ? ("ceph-bucket-delete") : ("ceph-bucket-retain")}'
+    && kubernetesObjects.configuration.retention
+      === '${(schema.spec.lifecycle.objectStorageDeletion) == "delete" ? ("delete") : ("retain")}',
+  'Chirp production-kubernetes must select matching Rook bucket reclamation and provider retention from one typed lifecycle authority.',
 );
 for (const expected of [
   'ApplicationHost.kubernetes',
@@ -743,7 +753,7 @@ assert(singletonInstances.some(({ source }) => source.includes('kind: ClickHouse
 const exampleInstallation = await readFile(join(example, 'kubernetes/chirp.example.yaml'), 'utf8');
 assert(exampleInstallation.includes('kind: ChirpInstallation') && exampleInstallation.includes('namespace: chirp-control'), 'Chirp must ship an explicit control-plane installation example.');
 assert(exampleInstallation.includes('registryProjectDeletion: delete') && exampleInstallation.includes('purgeRegistryRepositories: true'), 'The disposable local example must make its destructive Harbor lifecycle policy explicit.');
-assert(exampleInstallation.includes('databaseDeletion: delete') && exampleInstallation.includes('retentionPolicy: 14d'), 'The disposable local example must delete authoritative and rebuildable stores coherently while keeping its configured backup window explicit.');
+assert(exampleInstallation.includes('databaseDeletion: delete') && exampleInstallation.includes('objectStorageDeletion: delete') && exampleInstallation.includes('retentionPolicy: 14d'), 'The disposable local example must delete authoritative and rebuildable stores coherently while keeping its configured backup window explicit.');
 assert(exampleInstallation.includes('nodePort: 30080'), 'The local installation example must choose its collision domain explicitly.');
 assert(exampleInstallation.includes('mode: node-port'), 'The local installation example must select its exposure transport through typed desired state.');
 const packageManifest = await json(join(example, 'package.json'));
