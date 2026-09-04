@@ -87,17 +87,12 @@ test('keeps the representative product surface responsive and free of browser fa
         admittedRedirect = true;
       }
       if (publicAdmissionRoute && !admittedRedirect) {
-        const renderedDestination = await Promise.race([
-          page.getByRole('heading', { level: 1, name: 'What should we accomplish?' }).first().waitFor({
-            state: 'visible',
-            timeout: 15_000,
-          }).then(() => 'authenticated' as const),
-          page.getByRole('heading', { level: 1, name: route.heading }).first().waitFor({
-            state: 'visible',
-            timeout: 15_000,
-          }).then(() => 'admission' as const),
-        ]);
-        admittedRedirect = renderedDestination === 'authenticated';
+        // The qualification deployment supplies its local authenticated
+        // principal. Admission pages may render their SSR heading briefly,
+        // but their settled contract is to redirect that principal into the
+        // product rather than leave a duplicate sign-in surface mounted.
+        await page.waitForURL(isAuthenticatedProductPath, { timeout: 15_000 });
+        admittedRedirect = true;
       }
       admittedRedirect ||= publicAdmissionRoute
         && isAuthenticatedProductPath(new URL(page.url()));
