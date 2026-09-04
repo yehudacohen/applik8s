@@ -74,10 +74,19 @@ const providerExports = (plan) => new Set(plan.implementations.map((implementati
 const kubernetesDatabase = kubernetesPlan?.implementations.find(
   (implementation) => implementation.identity.provider.export === 'Database.postgres',
 );
+const kubernetesRegistry = kubernetesPlan?.implementations.find(
+  (implementation) => implementation.identity.provider.export === 'ContainerRegistry.harbor',
+);
 assert(
   kubernetesDatabase?.configuration?.lifecycle?.deletionPolicy
     === '${schema.spec.lifecycle.databaseDeletion}',
   'Chirp production-kubernetes must keep database deletion under the authored installation lifecycle instead of hard-coding retention in the assembly profile.',
+);
+assert(
+  kubernetesRegistry?.configuration?.management?.pushSecretName === 'chirp-registry-push'
+    && kubernetesRegistry.configuration.management.pullSecretName === 'chirp-registry-pull'
+    && kubernetesRegistry.configuration.endpoint?.kind === 'kubernetes-node-port',
+  'Chirp production-kubernetes must manage its Harbor project and purpose-scoped credentials so a clean installation does not depend on pre-existing workload-namespace Secrets.',
 );
 for (const expected of [
   'ApplicationHost.kubernetes',

@@ -477,22 +477,11 @@ export const productionKubernetesProfile = app.profile(
     const queue = Queue.jetStream({ eventLog: events });
     const scheduler = Scheduler.postgres({ database });
     const results = JobResultStore.postgres({ database });
-    const registry = ContainerRegistry.harbor({
-      endpoint: ContainerRegistry.origin('https://registry.chirp.internal'),
-      project: profileNamespace,
-      pushCredentials: {
-        apiVersion: 'v1',
-        kind: 'Secret',
-        namespace: profileNamespace,
-        name: 'chirp-registry-push',
-        dockerConfigJsonKey: '.dockerconfigjson',
-      },
-      pullSecret: {
-        apiVersion: 'v1',
-        kind: 'Secret',
-        namespace: profileNamespace,
-        name: 'chirp-registry-pull',
-      },
+    const registry = localContainerRegistry(profileNamespace, {
+      registryProjectDeletion:
+        app.installation.spec.lifecycle.registryProjectDeletion,
+      purgeRegistryRepositories:
+        app.installation.spec.lifecycle.purgeRegistryRepositories,
     });
     const jobHost = FiniteExecutionHost.kubernetes({ cluster, registry });
     const host = ApplicationHost.kubernetes({
