@@ -78,9 +78,10 @@ const kubernetesRegistry = kubernetesPlan?.implementations.find(
   (implementation) => implementation.identity.provider.export === 'ContainerRegistry.harbor',
 );
 assert(
-  kubernetesDatabase?.configuration?.lifecycle?.deletionPolicy
-    === '${schema.spec.lifecycle.databaseDeletion}',
-  'Chirp production-kubernetes must keep database deletion under the authored installation lifecycle instead of hard-coding retention in the assembly profile.',
+  kubernetesDatabase?.configuration?.clusterName === 'chirp-models'
+    && kubernetesDatabase.configuration.lifecycle?.deletionPolicy
+      === '${schema.spec.lifecycle.databaseDeletion}',
+  'Chirp production-kubernetes must preserve the canonical chirp-models connection identity and keep database deletion under the authored installation lifecycle.',
 );
 assert(
   kubernetesRegistry?.configuration?.management?.pushSecretName === 'chirp-registry-push'

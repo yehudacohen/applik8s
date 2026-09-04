@@ -459,6 +459,7 @@ export const productionKubernetesProfile = app.profile(
     const cluster = KubernetesCluster.current({ namespace: profileNamespace });
     const database = Database.postgres({
       name: 'chirp',
+      clusterName: 'chirp-models',
       database: 'chirp',
       namespace: profileNamespace,
       ownership: 'direct-provisioned',
