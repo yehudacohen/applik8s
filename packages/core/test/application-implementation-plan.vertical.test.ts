@@ -138,6 +138,32 @@ describe('application implementation planning', () => {
       .toMatchObject({ deploymentFamily: 'kubernetes' });
   });
 
+  it('preserves the selected implementation callable runtime in the canonical plan', () => {
+    const source = input();
+    const database = source.declarations.find(({ key }) => key === 'database') as ApplicationImplementationDeclaration;
+    const plan = resolveApplicationImplementationPlan(input({
+      declarations: source.declarations.map((entry) => entry.key === 'database'
+        ? {
+            ...database,
+            callableRuntime: {
+              kind: 'runtime',
+              runtime: {
+                env: { DATABASE_MODE: 'selected' },
+              },
+            },
+          }
+        : entry),
+    }));
+
+    expect(plan.implementations.find(({ identity }) => identity.provider.export === 'databaseProvider'))
+      .toMatchObject({
+        callableRuntime: {
+          kind: 'runtime',
+          runtime: { env: { DATABASE_MODE: 'selected' } },
+        },
+      });
+  });
+
   it('keeps implementation identity independent of profile selection and input ordering', () => {
     const first = resolveApplicationImplementationPlan(input());
     const source = input();

@@ -10051,6 +10051,7 @@
             "inspectApplicationAlchemyStackIdentityClaim",
             "inspectApplicationAlchemyState",
             "materializeApplicationAwsNativeResources",
+            "releaseApplicationAlchemyStackIdentity",
             "runApplicationAlchemyEffect",
             "sameApplicationAlchemyStackIdentity",
             "withApplicationAlchemyDeploymentLease"

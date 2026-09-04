@@ -1,6 +1,6 @@
 // typecast-file-boundary: persisted identity claims are unknown JSON until the complete versioned structural checks below establish their narrow protocol shape.
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationAlchemyStackIdentity } from "./identity.js";
 
@@ -105,6 +105,32 @@ export async function claimApplicationAlchemyStackIdentity(
       `Alchemy Stack key ${stack.key} is already claimed by a different identity, deployment strategy, or corrupt record.`,
     );
   }
+}
+
+/**
+ * Releases the reverse identity claim after the corresponding Alchemy stack
+ * has reached its terminal destroyed state. Callers must hold the deployment
+ * lease: removing this claim while resources or state remain would allow a
+ * different strategy to adopt the same physical installation.
+ */
+export async function releaseApplicationAlchemyStackIdentity(
+  root: string,
+  stack: ApplicationAlchemyStackIdentity,
+): Promise<void> {
+  const path = join(root, "identities", `${stack.key}.json`);
+  const existing = await inspectApplicationAlchemyStackIdentityClaim(root, stack);
+  if (existing === undefined) return;
+  if (
+    existing.key !== stack.key
+    || existing.digest !== stack.digest
+    || existing.canonical !== stack.canonical
+    || (existing.version === 2 && existing.strategy !== stack.strategy)
+  ) {
+    throw new Error(
+      `Alchemy Stack identity claim ${path} changed before it could be released.`,
+    );
+  }
+  await rm(path, { force: true });
 }
 
 /**

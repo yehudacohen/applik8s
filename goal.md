@@ -367,10 +367,10 @@ durable decisions. Future receipts are written beneath
 
 The public-contract inventory has advanced from discovery-only to
 candidate-review-ready. All 66 publishable packages belong to exactly one
-checked-in disposition group; their 228 entrypoints and 7,777 exported symbols
+checked-in disposition group; their 234 entrypoints and 7,946 exported symbols
 inherit explicit owner, maturity, compatibility, stability, documentation,
-evidence, and replacement policy. The inventory also classifies 291 public
-diagnostics, 18 CLI commands, 112 visible CLI options, and 109 runtime environment
+evidence, and replacement policy. The inventory also classifies 310 public
+diagnostics, 18 CLI commands, 114 visible CLI options, and 109 runtime environment
 names. Release mode now requires the maintainer to mark the disposition frozen
 and verifies that every acceptance evidence path exists. This explicit review
 decision remains open and is not silently converted into a passing freeze.
@@ -400,6 +400,20 @@ grants nothing, and any object-store effect forces a durable task boundary
 rather than executing in workflow history. Chirp's media verification uses this
 function-native path and its pure signature helpers remain independently
 importable without initializing the application graph.
+
+Concrete assembly-profile planning now carries the selected implementation's
+normalized callable-runtime binding into the canonical implementation plan and
+treats it as authoritative during physical lowering. Inactive profile branches
+can no longer reintroduce their endpoints, credentials, or required environment
+through stale semantic-provider metadata. Target selection remains intact for
+the target adapter that owns it, while already-resolved target providers no
+longer require a redundant profile binding. The source CLI also hands `build`
+off from Bun to Node before compiler discovery, avoiding unsupported Bun Node
+internals in generated Saga and worker builds. Finally, terminal Alchemy destroy
+releases the reverse stack-identity claim under the deployment lease, allowing a
+cleanly removed application identity to be safely reused without weakening
+strategy-conflict protection. Focused regression suites and the complete v0.9
+static candidate aggregate pass with these corrections.
 
 The contract-mode v0.9 scorecard has 25 gates: 19 passing, two intentionally
 non-release-blocking provider-expansion lanes blocked, two exact-candidate

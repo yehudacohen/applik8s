@@ -496,8 +496,6 @@ function requiresProfileImplementationBinding(
   provider: Extract<ApplicationGraphNode, { readonly kind: 'provider' }>,
 ): boolean {
   return provider.implementation === 'application-provider-selection'
-    || provider.implementation === 'application-target-provider-selection'
-    || provider.implementation === 'target-selected'
     || provider.implementation === 'unresolved-profile-implementation';
 }
 

@@ -258,6 +258,113 @@ describe("Application deployment compiler", () => {
     expect(JSON.stringify(selected)).not.toContain('applik8s-events');
   });
 
+  it('reduces callable runtime metadata to the selected assembly profile', () => {
+    const provenance = sourceProvenance({
+      origin: 'framework-generated',
+      generatedBy: 'application.profile',
+      symbol: 'starter',
+    });
+    const plan = resolveApplicationImplementationPlan({
+      application: 'guestbook',
+      profile: {
+        id: 'starter',
+        digest: `sha256:${'c'.repeat(64)}`,
+        provenance: [provenance],
+      },
+      declarations: [{
+        key: 'database',
+        capability: { interface: 'TransactionalDatabase@v1alpha1' },
+        provider: {
+          package: '@applik8s/applik8s',
+          export: 'Database.postgres',
+          version: '0.9.0',
+        },
+        identity: { kind: 'named', name: 'database' },
+        provenance,
+        configuration: { kind: 'postgres' },
+        callableRuntime: {
+          kind: 'runtime',
+          runtime: { env: { PROVIDER_KIND: 'selected-local' } },
+        },
+        configurationDigest: `sha256:${'d'.repeat(64)}`,
+        configurationSources: [],
+        guarantees: [],
+        runtimeAdapter: '@applik8s/runtime-postgres',
+        readiness: 'postgres.ready/v1',
+        lifecycle: 'application',
+        migration: 'postgres.migration/v1',
+        evidence: [],
+        maturity: 'stable',
+        dependencies: [],
+      }],
+      bindings: [{
+        id: 'binding.database',
+        capability: { interface: 'TransactionalDatabase@v1alpha1' },
+        implementation: 'database',
+        provenance,
+      }],
+    });
+    const base = applicationGraph();
+    const semantic = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind !== 'provider'
+        ? node
+        : {
+            ...node,
+            config: {
+              callableRuntime: {
+                kind: 'profileSelection',
+                selector: 'schema.spec.profile',
+                cases: {
+                  starter: {
+                    kind: 'runtime',
+                    runtime: {
+                      env: { PROVIDER_KIND: 'local' },
+                    },
+                  },
+                  developer: {
+                    kind: 'runtime',
+                    runtime: {
+                      env: {
+                        PROVIDER_KIND: 'stale-remote',
+                        REMOTE_ENDPOINT: '${schema.spec.providers.endpoint}',
+                      },
+                    },
+                  },
+                  dedicated: {
+                    kind: 'runtime',
+                    runtime: {
+                      env: {
+                        PROVIDER_KIND: 'remote',
+                        REMOTE_ENDPOINT: '${schema.spec.providers.endpoint}',
+                      },
+                    },
+                  },
+                },
+                default: {
+                  kind: 'runtime',
+                  runtime: { env: { PROVIDER_KIND: 'local' } },
+                },
+              },
+            },
+          }),
+    } as ApplicationGraph;
+
+    const physical = applicationDeploymentGraphForImplementationPlan(
+      semantic,
+      plan,
+    );
+    expect(physical.nodes.find((node) => node.kind === 'provider')).toMatchObject({
+      config: {
+        callableRuntime: {
+          kind: 'runtime',
+          runtime: { env: { PROVIDER_KIND: 'selected-local' } },
+        },
+      },
+    });
+    expect(JSON.stringify(physical)).not.toContain('REMOTE_ENDPOINT');
+  });
+
   it('aliases multiple logical capability bindings that share one implementation identity', () => {
     const provenance = sourceProvenance({
       origin: 'framework-generated',
@@ -4072,6 +4179,43 @@ describe("Application deployment compiler", () => {
         implementation: 'postgres',
       }),
     ]);
+
+    const targetSelectedGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id !== 'provider.transactional-database'
+        ? node
+        : {
+            ...node,
+            implementation: 'application-target-provider-selection',
+            config: {
+              targetSelection: {
+                targets: {
+                  kubernetes: {
+                    implementation: 'postgres',
+                    configuration: { kind: 'postgres' },
+                  },
+                },
+              },
+            },
+          }),
+    } as ApplicationGraph;
+    const targetSelectedPlan = compileApplicationPlan({
+      graph: targetSelectedGraph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      implementationPlan: {
+        ...implementationPlan,
+        bindings: [],
+        implementations: [],
+        dependencies: [],
+      },
+      providerGuarantees: [],
+    });
+    expect(targetSelectedPlan.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED',
+    }));
 
     const attributed = plan.physical.nodes.find(({ implementations }) => implementations?.length);
     expect(attributed).toBeDefined();

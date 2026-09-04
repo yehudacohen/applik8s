@@ -2,7 +2,14 @@
 
 const bunRuntime = typeof process.versions.bun === 'string';
 const command = process.argv[2];
-const nodeOnlyCommands = new Set(['plan', 'deploy', 'status', 'destroy', 'delete']);
+const nodeOnlyCommands = new Set([
+  'build',
+  'plan',
+  'deploy',
+  'status',
+  'destroy',
+  'delete',
+]);
 
 if (
   bunRuntime
@@ -10,8 +17,8 @@ if (
   && nodeOnlyCommands.has(command)
   && process.env.APPLIK8S_DISABLE_NODE_CLI_HANDOFF !== '1'
 ) {
-  // Planning and deployment load Kubernetes/AWS SDKs, TypeKro, Alchemy, and
-  // worker-thread compiler paths that rely on Node internals Bun does not
+  // Compilation, planning, and deployment load Kubernetes/AWS SDKs, TypeKro,
+  // Alchemy, and worker-thread compiler paths that rely on Node internals Bun does not
   // implement (notably tcp_wrap). Hand off before application/profile
   // discovery so one command executes once under one runtime and preserves
   // every CLI option verbatim.

@@ -42,6 +42,7 @@ interface OperatorImplementation {
 
 interface CallableImplementation {
   readonly kind: 'callable';
+  readonly runtimeValue?: string;
   invoke(input: string): Promise<string>;
 }
 
@@ -73,6 +74,22 @@ const Callable = defineApplicationProvider<CallableImplementation>({
   interface: 'ProfileCallable',
   version: 'v1',
   guarantees: ['callable'],
+  runtime: {
+    operations: {
+      invoke: {
+        module: '@example/callable/runtime',
+        export: 'invokeCallable',
+        access: 'none',
+      },
+    },
+    bind(implementation) {
+      return {
+        env: {
+          PROFILE_CALLABLE_MODE: implementation.runtimeValue ?? 'default',
+        },
+      };
+    },
+  },
   accepts: (value): value is CallableImplementation => Boolean(
     value && typeof value === 'object'
     && Reflect.get(value, 'kind') === 'callable'
@@ -131,6 +148,7 @@ describe('application assembly profiles', () => {
       maturity: 'beta',
       value: {
         kind: 'callable',
+        runtimeValue: 'production',
         async invoke(input) {
           return `called:${input}`;
         },
@@ -145,6 +163,12 @@ describe('application assembly profiles', () => {
     expect(plan.implementations[0]?.configuration).toEqual({
       kind: 'callable',
       endpoint: 'https://service.example.test',
+    });
+    expect(plan.implementations[0]?.callableRuntime).toEqual({
+      kind: 'runtime',
+      runtime: {
+        env: { PROFILE_CALLABLE_MODE: 'production' },
+      },
     });
     expect(JSON.stringify(plan)).not.toContain('invoke');
     await expect(callable.invoke('input')).resolves.toBe('called:input');

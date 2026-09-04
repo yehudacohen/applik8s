@@ -62,6 +62,7 @@ import {
 import {
   assertApplicationAlchemyStackIdentityAvailable,
   claimApplicationAlchemyStackIdentity,
+  releaseApplicationAlchemyStackIdentity,
 } from "./identity-registry.js";
 import type { ApplicationAlchemyLease } from "./lease.js";
 import { withDeploymentLease } from "./deployment-lease.js";
@@ -472,6 +473,7 @@ export function createApplicationAlchemyDeployment(
           stack: stack.key,
           stage,
         });
+        await releaseApplicationAlchemyStackIdentity(options.stateRoot, stack);
         return { stack, stage, transaction: "destroyed" };
       }),
   };

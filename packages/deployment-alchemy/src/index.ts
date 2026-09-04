@@ -21,6 +21,7 @@ export {
   assertApplicationAlchemyStackIdentityAvailable,
   claimApplicationAlchemyStackIdentity,
   inspectApplicationAlchemyStackIdentityClaim,
+  releaseApplicationAlchemyStackIdentity,
 } from "./identity-registry.js";
 export {
   type ApplicationAlchemyLease,

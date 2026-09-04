@@ -12,6 +12,7 @@ import {
   claimApplicationAlchemyStackIdentity,
   inspectApplicationAlchemyStackIdentityClaim,
   inspectApplicationAlchemyState,
+  releaseApplicationAlchemyStackIdentity,
   withApplicationAlchemyDeploymentLease,
 } from "../src/index.js";
 import { withDeploymentLease } from "../src/deployment-lease.js";
@@ -45,6 +46,37 @@ describe("Alchemy backend identity and state", () => {
     await expect(
       access(join(root, "identities", `${stack.key}.json`)),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("releases only the matching identity claim after terminal destruction", async () => {
+    const root = await temporaryRoot();
+    const stack = applicationAlchemyStackIdentity(identity("notes", "local"), "kro");
+    await claimApplicationAlchemyStackIdentity(root, stack);
+
+    await releaseApplicationAlchemyStackIdentity(root, stack);
+    await expect(
+      inspectApplicationAlchemyStackIdentityClaim(root, stack),
+    ).resolves.toBeUndefined();
+    await expect(
+      releaseApplicationAlchemyStackIdentity(root, stack),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not release a claim through a conflicting deployment strategy", async () => {
+    const root = await temporaryRoot();
+    const deploymentIdentity = identity("notes", "local");
+    const claimed = applicationAlchemyStackIdentity(deploymentIdentity, "kro");
+    await claimApplicationAlchemyStackIdentity(root, claimed);
+
+    await expect(
+      releaseApplicationAlchemyStackIdentity(
+        root,
+        applicationAlchemyStackIdentity(deploymentIdentity, "direct"),
+      ),
+    ).rejects.toThrow(/changed before it could be released/);
+    await expect(
+      inspectApplicationAlchemyStackIdentityClaim(root, claimed),
+    ).resolves.toBeDefined();
   });
 
   it("rejects a conflicting persisted identity during read-only validation", async () => {

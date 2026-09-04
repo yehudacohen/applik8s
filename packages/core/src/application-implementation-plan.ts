@@ -54,6 +54,14 @@ export interface ApplicationImplementationDeclaration {
    * remain typed references; resolved Secret material is never admissible.
    */
   readonly configuration: JsonValue;
+  /**
+   * Normalized public values and Secret references required by managed
+   * workers for this concrete implementation. This belongs to the selected
+   * implementation rather than the authored semantic provider node so an
+   * assembly-profile transition cannot retain another branch's runtime
+   * environment.
+   */
+  readonly callableRuntime?: JsonValue;
   /** Digest of configuration shape and non-secret values; Secret values are forbidden. */
   readonly configurationDigest: string;
   readonly configurationSources: readonly {
@@ -124,6 +132,7 @@ export interface ApplicationImplementationPlanNode {
   readonly id: ApplicationCanonicalIdentity['id'];
   readonly identity: ApplicationCapabilityImplementationIdentity;
   readonly configuration: JsonValue;
+  readonly callableRuntime?: JsonValue;
   readonly configurationSources: ApplicationImplementationDeclaration['configurationSources'];
   readonly guarantees: readonly string[];
   readonly runtimeAdapter: string;
@@ -408,6 +417,9 @@ export function resolveApplicationImplementationPlan(
       id: identity.canonical.id,
       identity,
       configuration: declaration.configuration,
+      ...(declaration.callableRuntime !== undefined
+        ? { callableRuntime: declaration.callableRuntime }
+        : {}),
       configurationSources: sortedConfigurationSources(declaration.configurationSources),
       guarantees: [...new Set(declaration.guarantees)].sort(),
       runtimeAdapter: declaration.runtimeAdapter,

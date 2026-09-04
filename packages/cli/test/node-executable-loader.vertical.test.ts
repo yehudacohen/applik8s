@@ -16,6 +16,7 @@ describe('installed Node executable TypeScript loading', () => {
   test('registers the extensionless authored-TypeScript resolver before loading CLI commands', async () => {
     const bin = await readFile(resolve('packages/cli/dist/bin.js'), 'utf8');
     expect(bin).toContain('node-register-typescript.mjs');
+    expect(bin).toMatch(/nodeOnlyCommands = new Set\(\[[\s\S]*["']build["']/u);
 
     const directory = await mkdtemp(join(tmpdir(), 'applik8s-node-loader-'));
     temporaryDirectories.push(directory);

@@ -4,6 +4,7 @@ import {
   type ApplicationImplementationPlan,
   type ApplicationImplementationDeclaration,
   type ApplicationImplementationResolutionInput,
+  type JsonValue,
   type ApplicationSourceProvenance,
   canonicalJsonV1String,
   resolveApplicationImplementationPlan,
@@ -16,10 +17,12 @@ import {
 } from './application-capability-implementation.js';
 import type { ApplicationProviderToken } from './application-providers.js';
 import {
+  applicationCallableProviderRuntimeBinding,
   applicationProviderQualificationFor,
   applicationProviderTokenName,
   isApplicationQualifiedProviderToken,
 } from './application-providers.js';
+import { applicationTypeKroGraphValue } from './application-typekro-values.js';
 
 export interface ApplicationAssemblyProfileDefaults {
   readonly retention?: 'retain' | 'delete';
@@ -256,11 +259,22 @@ function profileResolutionInput(input: {
         visibility: dependency.visibility ?? 'private',
       });
     }
+    const callableRuntime = applicationCallableProviderRuntimeBinding(
+      metadata.token,
+      implementation,
+    );
     declarations.push({
       key,
       capability: capabilityReference(metadata.token),
       provider: metadata.provider,
       configuration: metadata.configuration,
+      ...(callableRuntime === undefined
+        ? {}
+        : {
+            callableRuntime: applicationTypeKroGraphValue(
+              callableRuntime,
+            ) as JsonValue,
+          }),
       identity: metadata.explicitIdentity
         ? { kind: 'named', name: metadata.explicitIdentity }
         : identity,

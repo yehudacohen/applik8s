@@ -98,7 +98,11 @@ export function applicationDeploymentGraphForImplementationPlan(
     );
     const key = applicationProviderGraphConfigurationKey(providerInterface);
     const qualification = providerQualificationRecord(source);
-    const semanticConfig = applicationProviderSemanticMetadata(source);
+    const semanticConfig = applicationProviderSemanticMetadata(
+      source,
+      plan.profile.id,
+      implementation.callableRuntime,
+    );
     const aliasCandidate = existingProviderAlias(source);
     const bindingKindCandidate = source.config
       ? Reflect.get(source.config, 'bindingKind')
@@ -154,6 +158,8 @@ export function applicationDeploymentGraphForImplementationPlan(
  */
 function applicationProviderSemanticMetadata(
   provider: ApplicationProviderNode,
+  profile: string,
+  implementationCallableRuntime: JsonValue | undefined,
 ): Record<string, JsonValue> {
   const config = provider.config;
   if (!config) return {};
@@ -170,10 +176,62 @@ function applicationProviderSemanticMetadata(
       'identityInfrastructure',
     ]
       .flatMap((key) => {
-        const value = Reflect.get(config, key);
-        return value === undefined ? [] : [[key, value as JsonValue]];
+        const value = key === 'callableRuntime'
+          ? implementationCallableRuntime ?? Reflect.get(config, key)
+          : Reflect.get(config, key);
+        if (value === undefined) return [];
+        return [[
+          key,
+          key === 'callableRuntime'
+            ? selectCallableRuntimeProfile(value as JsonValue, profile)
+            : value as JsonValue,
+        ]];
       }),
   );
+}
+
+/**
+ * Physical planning has already selected one assembly profile. Retaining the
+ * authoring-time callable-runtime switch at this point makes Kubernetes and
+ * AWS workload emitters merge inactive branches back into the deployment
+ * (including credentials and required environment from other profiles).
+ * Reduce only profile selection here; target selection remains available to
+ * the target adapter that owns it.
+ */
+function selectCallableRuntimeProfile(
+  value: JsonValue,
+  profile: string,
+): JsonValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as JsonObject;
+  if (record.kind === 'profileSelection') {
+    if (record.cases === undefined) {
+      throw new Error('Callable runtime profile selection requires cases.');
+    }
+    const cases = jsonObject(record.cases, 'Callable runtime profile cases');
+    const fallback = record.default;
+    const selected = cases[profile] ?? fallback;
+    if (selected === undefined) {
+      throw new Error(
+        `Callable runtime profile selection has no ${profile} branch or default.`,
+      );
+    }
+    return selectCallableRuntimeProfile(selected, profile);
+  }
+  if (record.kind !== 'targetSelection') return value;
+  if (record.targets === undefined) {
+    throw new Error('Callable runtime target selection requires targets.');
+  }
+  const targets = jsonObject(record.targets, 'Callable runtime target cases');
+  return {
+    ...record,
+    targets: Object.fromEntries(
+      Object.entries(targets).map(([target, branch]) => [
+        target,
+        selectCallableRuntimeProfile(branch, profile),
+      ]),
+    ),
+  };
 }
 
 function existingProviderAlias(provider: ApplicationProviderNode): string | undefined {
