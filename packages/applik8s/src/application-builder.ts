@@ -4614,12 +4614,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   const provideImplementation = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation?: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation> | ApplicationTargetProviderBinding<TImplementation> => {
     const qualification = applicationProviderQualificationFor(token);
     if (implementation === undefined) {
-      if (!isApplicationQualifiedProviderToken(token)) {
-        throw new Error(`app.provide(${applicationProviderTokenName(token)}) target branches require a qualified capability created with .named(...).`);
-      }
       return createApplicationTargetProviderBinding<TImplementation>(token, (selection) => {
         if (token.accepts && !applicationProviderSelectionSatisfies(selection, token.accepts)) {
-          throw new Error(`app.provide(${token.qualification.key}) target branch does not satisfy ${token.name}.`);
+          throw new Error(`app.provide(${qualification?.key ?? applicationProviderTokenName(token)}) target branch does not satisfy ${token.name}.`);
         }
         recordApplicationProviderGraph(
           state,

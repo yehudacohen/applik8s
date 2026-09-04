@@ -158,7 +158,17 @@ function applicationProviderSemanticMetadata(
   const config = provider.config;
   if (!config) return {};
   return Object.fromEntries(
-    ['runtimeContract', 'callableRuntime', 'identity', 'identityRuntime']
+    [
+      'runtimeContract',
+      'callableRuntime',
+      'identity',
+      'identityRuntime',
+      // MCP OAuth admission is a semantic property of the authored identity
+      // surface. Compatibility profile selections use this contract to omit
+      // OAuth-only servers from deterministic profiles while retaining Ory
+      // coordinates for Dedicated/External instances.
+      'identityInfrastructure',
+    ]
       .flatMap((key) => {
         const value = Reflect.get(config, key);
         return value === undefined ? [] : [[key, value as JsonValue]];

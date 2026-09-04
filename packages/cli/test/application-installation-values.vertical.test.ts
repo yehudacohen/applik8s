@@ -11,6 +11,11 @@ describe('Application installation TypeKro expression materialization', () => {
     })).toBe('managed-search');
   });
 
+  it('materializes constant KRO inclusion conditions as booleans', () => {
+    expect(resolveApplicationInstallationValues('${true}', {})).toBe(true);
+    expect(resolveApplicationInstallationValues('${false}', {})).toBe(false);
+  });
+
   it('selects the fallback when an optional leaf or parent is absent', () => {
     expect(resolveApplicationInstallationValues(optionalNamespace, {
       providers: { webSearch: {} },

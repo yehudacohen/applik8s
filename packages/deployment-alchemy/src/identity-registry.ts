@@ -107,6 +107,54 @@ export async function claimApplicationAlchemyStackIdentity(
   }
 }
 
+/**
+ * Verifies that a stack identity is either unclaimed or already claimed by the
+ * same deployment without creating or upgrading durable state. Planning uses
+ * this boundary so a read-only preview cannot leave half of an identity/state
+ * pair behind.
+ */
+export async function assertApplicationAlchemyStackIdentityAvailable(
+  root: string,
+  stack: ApplicationAlchemyStackIdentity,
+): Promise<void> {
+  const path = join(root, "identities", `${stack.key}.json`);
+  const existing = await readFile(path, "utf8")
+    .then((source) => JSON.parse(source) as unknown)
+    .catch((cause: unknown) => {
+      if (errorCode(cause) === "ENOENT") return undefined;
+      throw cause;
+    });
+  if (existing === undefined) return;
+  if (
+    existing
+    && typeof existing === "object"
+    && Reflect.get(existing, "version") === 1
+    && Reflect.get(existing, "key") === stack.key
+    && Reflect.get(existing, "digest") === stack.digest
+    && Reflect.get(existing, "canonical") === stack.canonical
+  ) {
+    if (stack.strategy !== "kro") {
+      throw new Error(
+        `Alchemy Stack key ${stack.key} predates strategy claims and can only be adopted as kro; use a distinct installation identity for direct mode.`,
+      );
+    }
+    return;
+  }
+  if (
+    !existing
+    || typeof existing !== "object"
+    || Reflect.get(existing, "version") !== 2
+    || Reflect.get(existing, "key") !== stack.key
+    || Reflect.get(existing, "digest") !== stack.digest
+    || Reflect.get(existing, "canonical") !== stack.canonical
+    || Reflect.get(existing, "strategy") !== stack.strategy
+  ) {
+    throw new Error(
+      `Alchemy Stack key ${stack.key} is already claimed by a different identity, deployment strategy, or corrupt record.`,
+    );
+  }
+}
+
 function errorCode(cause: unknown): string | undefined {
   return cause && typeof cause === "object"
     ? String(Reflect.get(cause, "code") ?? "")

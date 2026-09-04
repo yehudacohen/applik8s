@@ -108,7 +108,7 @@ try {
       execution,
       'destroy a prior or interrupted generated Agentic Start graph',
       cli,
-      ['destroy', '--context', context],
+      ['destroy', '--profile', deploymentProfile, '--context', context],
       target,
     );
     await waitForIdentityStartAbsent(
@@ -243,8 +243,8 @@ try {
     cli,
     [
       'deploy',
-      '--context', context,
       '--profile', deploymentProfile,
+      '--context', context,
       '--skip-app-build',
     ],
     target,
@@ -260,8 +260,8 @@ try {
     cli,
     [
       'deploy',
-      '--context', context,
       '--profile', deploymentProfile,
+      '--context', context,
       '--skip-app-build',
     ],
     target,
@@ -353,7 +353,7 @@ try {
     execution,
     'destroy the generated Start through Alchemy and TypeKro',
     cli,
-    ['destroy', '--context', context],
+    ['destroy', '--profile', deploymentProfile, '--context', context],
     target,
   );
   deployed = false;
@@ -469,7 +469,7 @@ try {
         execution,
         'clean up a failed generated Agentic Start qualification',
         cli,
-        ['destroy', '--context', context],
+        ['destroy', '--profile', deploymentProfile, '--context', context],
         target,
       );
       deployed = false;

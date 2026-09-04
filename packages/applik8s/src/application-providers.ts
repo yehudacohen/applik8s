@@ -1845,7 +1845,7 @@ function isApplicationRuntimeGraphValue(value: unknown): boolean {
 /** @internal Normalized provider runtime data retained through profile/target selection. */
 export function applicationCallableProviderRuntimeBinding<TImplementation>(
   token: ApplicationProviderToken<TImplementation>,
-  implementation: TImplementation,
+  implementation: unknown,
 ): ApplicationCallableProviderRuntimeBinding | undefined {
   const bind = token.callableRuntime?.bind;
   if (!bind) return undefined;

@@ -59,6 +59,7 @@ const applicationNamespace = 'identity-start-system';
 const rootResource = `identitystart/${installationName}`;
 const definitionResource = 'resourcegraphdefinition/identity-start';
 const lifecycleTimeoutMs = 20 * 60_000;
+const assemblyProfile = 'dedicated';
 const browserResultsPath = join(
   root,
   '.applik8s-tmp/evidence/v0.7/identity-start-dedicated-browser-results.json',
@@ -148,6 +149,8 @@ try {
     cli,
     [
       'deploy',
+      '--profile',
+      assemblyProfile,
       '--context',
       context,
       '--instance',
@@ -489,6 +492,8 @@ async function destroyApplication(label: string): Promise<void> {
     cli,
     [
       'destroy',
+      '--profile',
+      assemblyProfile,
       '--context',
       context,
       '--instance-name',

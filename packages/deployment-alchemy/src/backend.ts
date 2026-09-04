@@ -59,7 +59,10 @@ import {
   type ApplicationAlchemyStackIdentity,
   applicationAlchemyStackIdentity,
 } from "./identity.js";
-import { claimApplicationAlchemyStackIdentity } from "./identity-registry.js";
+import {
+  assertApplicationAlchemyStackIdentityAvailable,
+  claimApplicationAlchemyStackIdentity,
+} from "./identity-registry.js";
 import type { ApplicationAlchemyLease } from "./lease.js";
 import { withDeploymentLease } from "./deployment-lease.js";
 import { assertApplicationAlchemyDestroyCompleted } from "./destroy-state.js";
@@ -406,7 +409,7 @@ export function createApplicationAlchemyDeployment(
     stage,
     plan: () =>
       withDeploymentLease(options, stack, async () => {
-        await claimApplicationAlchemyStackIdentity(options.stateRoot, stack);
+        await assertApplicationAlchemyStackIdentityAvailable(options.stateRoot, stack);
         // typecast: evalStack's generic output is erased by the
         // typecast: the pinned runtime erases evalStack output; this callback returns Plan.Plan.
         const plan = (await runApplicationAlchemyEffect(

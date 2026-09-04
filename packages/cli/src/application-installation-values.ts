@@ -1,5 +1,9 @@
 // typecast-file-boundary: Concrete installation values are recursively normalized from unknown serialized graph data at this checked materialization boundary.
 import { evaluate } from 'cel-js';
+import {
+  applicationInstallationSpecWithAbsentReferences,
+  concretizeApplicationHasExpressions,
+} from '@applik8s/compiler';
 
 interface ResolveApplicationInstallationValueOptions {
   readonly preserveUnknownReferences?: boolean;
@@ -104,6 +108,8 @@ function applicationInstallationExpression(value: object): string | undefined {
 
 function resolveString(value: string, spec: Readonly<Record<string, unknown>>, options: ResolveApplicationInstallationValueOptions): unknown {
   if (options.preserveInstallationReferences) return value;
+  if (value === '${true}') return true;
+  if (value === '${false}') return false;
   const complete = /^\$\{(schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\}$/.exec(value);
   if (complete?.[1]) {
     try {
@@ -160,7 +166,7 @@ function resolveApplicationSchemaExpression(expression: string, spec: Readonly<R
       concretizedExpression,
       {
         schema: {
-          spec: installationSpecWithAbsentReferences(concretizedExpression, spec),
+          spec: applicationInstallationSpecWithAbsentReferences(concretizedExpression, spec),
         },
       },
       {
@@ -174,108 +180,6 @@ function resolveApplicationSchemaExpression(expression: string, spec: Readonly<R
   } catch (error) {
     throw new MissingApplicationInstallationValueError(expression, error);
   }
-}
-
-/**
- * TypeKro lowers optional JavaScript access into CEL `has(schema.spec.path)`
- * guards. Deployment planning must choose the same concrete branch before a
- * nested composition sees the value, but it must not gain a general CEL
- * reflection surface. Concretize only exact direct installation paths and do
- * not inspect quoted fallback data.
- */
-function concretizeApplicationHasExpressions(
-  expression: string,
-  spec: Readonly<Record<string, unknown>>,
-): string {
-  let resolved = '';
-  let index = 0;
-  let quote: '"' | "'" | undefined;
-  let escaped = false;
-  while (index < expression.length) {
-    const character = expression[index] ?? '';
-    if (quote) {
-      resolved += character;
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = undefined;
-      index += 1;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      resolved += character;
-      index += 1;
-      continue;
-    }
-    const previous = index === 0 ? '' : expression[index - 1] ?? '';
-    if (
-      expression.startsWith('has', index)
-      && !/[A-Za-z0-9_]/.test(previous)
-    ) {
-      const match = /^has\s*\(\s*(schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\)/.exec(
-        expression.slice(index),
-      );
-      if (match?.[1]) {
-        resolved += installationSpecHasPath(spec, match[1]) ? 'true' : 'false';
-        index += match[0].length;
-        continue;
-      }
-    }
-    resolved += character;
-    index += 1;
-  }
-  return resolved;
-}
-
-function installationSpecHasPath(
-  spec: Readonly<Record<string, unknown>>,
-  path: string,
-): boolean {
-  if (!directInstallationPath(path)) return false;
-  let current: unknown = spec;
-  for (const segment of path.split('.').slice(2)) {
-    if (
-      !current
-      || typeof current !== 'object'
-      || Array.isArray(current)
-      || !Object.hasOwn(current, segment)
-    ) return false;
-    current = Reflect.get(current, segment);
-  }
-  return true;
-}
-
-/**
- * CEL implementations may resolve member paths before choosing a conditional
- * branch. Profile schemas intentionally omit fields that belong only to an
- * inactive variant, so give those paths an inert null leaf while preserving
- * every authored value. If the selected branch actually needs one, the final
- * absent-value check still fails closed.
- */
-function installationSpecWithAbsentReferences(
-  expression: string,
-  spec: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-  const copy = structuredClone(spec) as Record<string, unknown>;
-  for (const match of expression.matchAll(
-    /\bschema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)+)/g,
-  )) {
-    const segments = (match[1] ?? '').split('.').filter(Boolean);
-    let cursor = copy;
-    for (const [index, segment] of segments.entries()) {
-      if (index === segments.length - 1) {
-        if (!Object.hasOwn(cursor, segment)) cursor[segment] = null;
-        continue;
-      }
-      const current = cursor[segment];
-      if (!current || typeof current !== 'object' || Array.isArray(current)) {
-        if (current !== undefined) break;
-        cursor[segment] = {};
-      }
-      cursor = cursor[segment] as Record<string, unknown>;
-    }
-  }
-  return copy;
 }
 
 function supportedApplicationSchemaExpression(expression: string): boolean {

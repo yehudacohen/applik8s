@@ -98,6 +98,10 @@ describe("Application deployment compiler", () => {
                 },
               },
               identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+              identityInfrastructure: {
+                kind: 'application-provider-selection',
+                selector: 'schema.spec.profile',
+              },
               profile: {
                 selectedBy: 'schema.spec.profile',
                 branches: [{ variant: 'starter', implementation: 'postgres' }],
@@ -125,6 +129,10 @@ describe("Application deployment compiler", () => {
           },
         },
         identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+        identityInfrastructure: {
+          kind: 'application-provider-selection',
+          selector: 'schema.spec.profile',
+        },
         transactionalDatabase: {
           kind: 'aurora-postgresql',
           account: { credentials: { kind: 'secret', reference: 'AWS_CREDENTIALS' } },
@@ -146,6 +154,10 @@ describe("Application deployment compiler", () => {
           },
         },
         identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+        identityInfrastructure: {
+          kind: 'application-provider-selection',
+          selector: 'schema.spec.profile',
+        },
       },
     });
     expect(JSON.stringify(physical)).not.toContain('resolved-credential');
@@ -3994,6 +4006,33 @@ describe("Application deployment compiler", () => {
     expect(renderApplicationPlanGraph(plan)).toContain('implementation: postgres');
     expect(renderApplicationPlanGraph(plan)).toContain('@applik8s/deployment-typekro/postgres');
     expect(validateApplicationPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+
+    const externalImplementationPlan = {
+      ...implementationPlan,
+      implementations: implementationPlan.implementations.map((implementation) => {
+        const { deploymentContributor: _deploymentContributor, ...external } = implementation;
+        return { ...external, lifecycle: 'external' as const };
+      }),
+    };
+    const externalPlan = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      implementationPlan: externalImplementationPlan,
+      providerGuarantees: [],
+    });
+    expect(externalPlan.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED',
+    }));
+    expect(externalPlan.physical.nodes.flatMap(({ implementations }) => implementations ?? []))
+      .not.toContainEqual(expect.objectContaining({
+        identity: externalImplementationPlan.implementations[0]?.id,
+      }));
+    expect(validateApplicationPlan(externalPlan).diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED',
+    }));
 
     const baseAssemblyPlan = compileApplicationPlan({
       graph,

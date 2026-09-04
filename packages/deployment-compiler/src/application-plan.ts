@@ -429,7 +429,13 @@ function implementationAttributionsForDeploymentNode(
     // binding, but they do not own a physical resource. Attributing the root
     // composition to them would invent a lifecycle contributor that does not
     // exist and would make the portable plan claim shared ownership.
-    if (execution === 'runtime-only') continue;
+    if (
+      execution === 'runtime-only'
+      || (
+        implementation.lifecycle === 'external'
+        && node.lifecycle.ownership !== 'external'
+      )
+    ) continue;
     if (
       node.lifecycle.ownership !== 'external'
       && !implementation.deploymentContributor

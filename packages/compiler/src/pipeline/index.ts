@@ -458,7 +458,13 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   if (
     executionGraph
     && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
-    && executionGraph.nodes.some((node) => node.kind === 'actor')
+    && executionGraph.nodes.some((node) =>
+      node.kind === 'actor'
+      || (
+        node.kind === 'provider'
+        && node.interface === 'ActorRuntime'
+        && node.implementation === 'celld-actors'
+      ))
     && !operatorCompiles.some((compiled) => compiled.manifest.metadata.name === celldOperator.definition.name)
   ) {
     const compileRequest: CompileOperatorRequestWithDefinition = {

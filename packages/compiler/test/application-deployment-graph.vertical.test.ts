@@ -19,6 +19,7 @@ import {
   applicationGeneratedSecretRequirements,
   applicationHostExecutionNodeIds,
   applicationProviderConsumerWorkloads,
+  applicationRequiresCelldArtifact,
   emitApplicationDeploymentGraph,
   withInstallationRuntimeBindings,
   withPublishedActorIngressRoutes,
@@ -39,6 +40,30 @@ afterEach(async () => {
 });
 
 describe("compiler deployment graph emission", () => {
+  it('derives Celld artifact demand from the concrete provider graph', () => {
+    const semantic = {
+      ...applicationGraph(),
+      nodes: [{
+        id: 'provider.ActorRuntime',
+        kind: 'provider',
+        name: 'ActorRuntime',
+        stability: 'experimental',
+        interface: 'ActorRuntime',
+        implementation: 'application-provider-selection',
+      }],
+    } as unknown as ApplicationGraph;
+    const concrete = {
+      ...semantic,
+      nodes: semantic.nodes.map((node) => ({
+        ...node,
+        implementation: 'celld-actors',
+      })),
+    } as ApplicationGraph;
+
+    expect(applicationRequiresCelldArtifact(semantic)).toBe(false);
+    expect(applicationRequiresCelldArtifact(concrete)).toBe(true);
+  });
+
   it("concretizes selected inference credentials before runtime-access parity", () => {
     const graph = {
       ...applicationGraph(),

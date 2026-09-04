@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationDeploymentIdentity } from "@applik8s/deployment-contract";
 import type { PersistedState } from "alchemy/State/State";
@@ -8,6 +8,7 @@ import {
   acquireApplicationAlchemyLease,
   applicationAlchemyStackIdentity,
   applicationAlchemyStateService,
+  assertApplicationAlchemyStackIdentityAvailable,
   claimApplicationAlchemyStackIdentity,
   inspectApplicationAlchemyStackIdentityClaim,
   inspectApplicationAlchemyState,
@@ -33,6 +34,33 @@ describe("Alchemy backend identity and state", () => {
     expect(first.canonical).not.toBe(second.canonical);
     await claimApplicationAlchemyStackIdentity(root, first);
     await claimApplicationAlchemyStackIdentity(root, first);
+  });
+
+  it("validates plan identities without creating a durable claim", async () => {
+    const root = await temporaryRoot();
+    const stack = applicationAlchemyStackIdentity(identity("notes", "local"), "kro");
+
+    await assertApplicationAlchemyStackIdentityAvailable(root, stack);
+
+    await expect(
+      access(join(root, "identities", `${stack.key}.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a conflicting persisted identity during read-only validation", async () => {
+    const root = await temporaryRoot();
+    const deploymentIdentity = identity("notes", "local");
+    await claimApplicationAlchemyStackIdentity(
+      root,
+      applicationAlchemyStackIdentity(deploymentIdentity, "kro"),
+    );
+
+    await expect(
+      assertApplicationAlchemyStackIdentityAvailable(
+        root,
+        applicationAlchemyStackIdentity(deploymentIdentity, "direct"),
+      ),
+    ).rejects.toThrow(/deployment strategy/);
   });
 
   it("keeps one stable Alchemy stack identity across installation profile transitions", async () => {

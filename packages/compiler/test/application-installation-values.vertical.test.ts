@@ -4,6 +4,8 @@ import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, test } from 'vitest';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphServiceHost, applicationGraphStringValue, applicationKroIncludeWhen } from '../src/application-installation-values.js';
 import {
+  applicationInstallationSpecWithAbsentReferences,
+  concretizeApplicationHasExpressions,
   materializeApplicationInstallationValue,
   materializeInstallationComposition,
 } from '../src/application-deployment-graph.js';
@@ -83,6 +85,36 @@ describe('installation-derived compiler values', () => {
       selected: 'yes',
     });
     expect(symbolic.resources[0]?.metadata.namespace).toBe('${schema.spec.name}');
+  });
+
+  test('materializes optional structured profile fields through TypeKro has guards', async () => {
+    const optionalName = '${has(schema.spec.providers) && has(schema.spec.providers.webSearch) && has(schema.spec.providers.webSearch.name) && dyn(schema.spec.providers.webSearch.name) != null ? schema.spec.providers.webSearch.name : "search-system"}';
+    await expect(materializeApplicationInstallationValue(optionalName, {
+      providers: { webSearch: {} },
+    })).resolves.toBe('search-system');
+    await expect(materializeApplicationInstallationValue(optionalName, {
+      providers: { webSearch: { name: 'managed-search' } },
+    })).resolves.toBe('managed-search');
+    await expect(materializeApplicationInstallationValue(
+      '${has(schema.spec.label) ? schema.spec.label : "has(schema.spec.secret)"}',
+      {},
+    )).resolves.toBe('has(schema.spec.secret)');
+  });
+
+  test('supplies only unquoted absent schema leaves to portable CEL evaluation', () => {
+    const expression = 'has(schema.spec.providers.webSearch.name) ? schema.spec.providers.webSearch.name : "has(schema.spec.quoted.missing)"';
+    const spec = { providers: { webSearch: {} } };
+    const concretized = concretizeApplicationHasExpressions(expression, spec);
+    const hydrated = applicationInstallationSpecWithAbsentReferences(concretized, spec);
+
+    expect(concretized).toBe('false ? schema.spec.providers.webSearch.name : "has(schema.spec.quoted.missing)"');
+    expect(hydrated).toEqual({
+      providers: {
+        webSearch: {
+          name: null,
+        },
+      },
+    });
   });
 
   test('preserves live and JSON-normalized TypeKro references', () => {

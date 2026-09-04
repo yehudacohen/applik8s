@@ -1,7 +1,7 @@
 import { AI } from '@applik8s/ai';
 import {
+  agenticProfilesWith,
   applicationAgenticModuleSchema,
-  configureAgenticProfiles,
 } from '@applik8s/start-agentic';
 import { application } from './app';
 import { AccessRequest } from './features/access/schema';
@@ -15,9 +15,7 @@ export const {
   workflows,
   inference,
   identity,
-} = configureAgenticProfiles(application, {
-  application: "identity-start",
-  namespace: "identity-start-system",
+} = application.include(agenticProfilesWith({
   schema: { ...applicationAgenticModuleSchema, AccessRequest },
   migrations: { path: '../drizzle' },
   starterInference: () =>
@@ -38,4 +36,4 @@ export const {
         },
       },
     }),
-});
+}));

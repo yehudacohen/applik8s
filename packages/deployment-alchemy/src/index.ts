@@ -18,6 +18,7 @@ export {
 } from "./identity.js";
 export {
   type ApplicationAlchemyStackIdentityClaim,
+  assertApplicationAlchemyStackIdentityAvailable,
   claimApplicationAlchemyStackIdentity,
   inspectApplicationAlchemyStackIdentityClaim,
 } from "./identity-registry.js";

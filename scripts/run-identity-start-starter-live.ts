@@ -49,6 +49,7 @@ const observed = new Map<
 >();
 let deployed = false;
 const lifecycleTimeoutMs = 20 * 60_000;
+const assemblyProfile = 'starter';
 
 await discardV06Evidence(evidencePath);
 await discardV06Evidence(browserReceiptPath);
@@ -69,7 +70,7 @@ try {
     await run(
       'remove the prior or interrupted Identity Start graph',
       cli,
-      ['destroy', '--context', context],
+      ['destroy', '--profile', assemblyProfile, '--context', context],
       applicationDir,
     );
   }
@@ -106,7 +107,7 @@ try {
   await run(
     'deploy Identity Start through Alchemy and TypeKro',
     cli,
-    ['deploy', '--context', context],
+    ['deploy', '--profile', assemblyProfile, '--context', context],
     applicationDir,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -165,7 +166,7 @@ try {
   await run(
     'destroy Identity Start through Alchemy and TypeKro',
     cli,
-    ['destroy', '--context', context],
+    ['destroy', '--profile', assemblyProfile, '--context', context],
     applicationDir,
   );
   deployed = false;
@@ -232,7 +233,7 @@ try {
       await run(
         'clean up failed Identity Start qualification',
         cli,
-        ['destroy', '--context', context],
+        ['destroy', '--profile', assemblyProfile, '--context', context],
         applicationDir,
       );
     } catch (cleanupError) {

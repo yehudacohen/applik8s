@@ -56,6 +56,8 @@ const providerDefinition =
 const applicationRoot = `identitystart/${installationName}`;
 const applicationDefinition = 'resourcegraphdefinition/identity-start';
 const lifecycleTimeoutMs = 20 * 60_000;
+const assemblyProfile = 'external';
+const providerAssemblyProfile = 'external-providers';
 const evidencePath = join(
   root,
   '.applik8s-tmp/evidence/v0.7/identity-start-external.json',
@@ -118,7 +120,7 @@ try {
     execution,
     'deploy the independently owned External provider graph',
     cli,
-    ['deploy', '--context', context, '--skip-app-build'],
+    ['deploy', '--profile', providerAssemblyProfile, '--context', context, '--skip-app-build'],
     providerFixtureDir,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -148,6 +150,8 @@ try {
     cli,
     [
       'deploy',
+      '--profile',
+      assemblyProfile,
       '--context',
       context,
       '--instance',
@@ -388,6 +392,8 @@ async function destroyApplication(label: string): Promise<void> {
     cli,
     [
       'destroy',
+      '--profile',
+      assemblyProfile,
       '--context',
       context,
       '--instance-name',
@@ -407,6 +413,8 @@ async function destroyProviderFixture(): Promise<void> {
     cli,
     [
       'destroy',
+      '--profile',
+      providerAssemblyProfile,
       '--context',
       context,
       '--instance-name',

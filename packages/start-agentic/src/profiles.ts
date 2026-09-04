@@ -9,6 +9,7 @@ import {
   ActorRuntime,
   AnalyticalDatabase,
   Analytics,
+  type ApplicationCapabilityImplementation,
   ApplicationHost,
   type ApplicationIdentityInfrastructure,
   type ApplicationIdentityProvider,
@@ -28,6 +29,7 @@ import {
   module,
   ObjectStorage,
   Observability,
+  type ApplicationObservabilityProvider,
   postgres,
   Scheduler,
   Search,
@@ -269,7 +271,7 @@ export interface AgenticProfileContext {
 }
 
 export interface ConfigureAgenticProfilesOptions<
-  TSchema extends Readonly<Record<string, unknown>> = Record<string, never>,
+  TSchema extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>,
 > extends Partial<AgenticProfileContext> {
   readonly schema?: TSchema;
   readonly migrations?: string | {
@@ -357,8 +359,14 @@ export interface ConfigureAgenticProfilesOptions<
   ) => ApplicationResearchEvidenceProvider;
 }
 
-export type AgenticProfilesOptions = Pick<
-  ConfigureAgenticProfilesOptions,
+export type AgenticProfilesOptions<
+  TSchema extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>,
+> = Pick<
+  ConfigureAgenticProfilesOptions<TSchema>,
+  | 'schema'
+  | 'migrations'
+  | 'databaseName'
+  | 'processor'
   | 'starterInference'
   | 'externalInference'
   | 'dedicatedIdentity'
@@ -388,11 +396,18 @@ export type AgenticProfilesOptions = Pick<
   readonly assemblyProfileFragments?: Readonly<{
     readonly starter?: readonly ApplicationProfileFragment[];
     readonly developer?: readonly ApplicationProfileFragment[];
+    readonly dedicated?: readonly ApplicationProfileFragment[];
+    readonly external?: readonly ApplicationProfileFragment[];
   }>;
 };
 
 type DatabaseBinding =
-  ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>
+  | ApplicationCapabilityImplementation<ApplicationTransactionalDatabaseProvider>;
+
+function databaseDependencyInput(database: DatabaseBinding) {
+  return 'token' in database ? database.token : database;
+}
 
 export type AgenticProfileName =
   | 'starter'
@@ -742,8 +757,7 @@ export const AgenticDedicated = Object.freeze({
     });
   },
   events(context: AgenticProfileContext) {
-    return {
-      kind: 'nats-jetstream' as const,
+    return EventLog.jetStream({
       name: `${context.application}-events`,
       namespace: context.namespace,
       provision: true,
@@ -752,7 +766,7 @@ export const AgenticDedicated = Object.freeze({
       servers: [
         `nats://${context.application}-events.${context.namespace}.svc:4222`,
       ],
-    };
+    });
   },
   objects(
     context: AgenticProfileContext,
@@ -980,8 +994,7 @@ export const AgenticExternal = Object.freeze({
     });
   },
   events(spec: AgenticExternalEvents, context: AgenticProfileContext) {
-    return {
-      kind: 'nats-jetstream' as const,
+    return EventLog.jetStream({
       name: spec.stream ?? 'applik8s-events',
       provision: false,
       servers: [spec.server],
@@ -997,7 +1010,7 @@ export const AgenticExternal = Object.freeze({
             },
           }
         : {}),
-    };
+    });
   },
   objects(spec: AgenticExternalObjects, context: AgenticProfileContext) {
     return ObjectStorage.s3({
@@ -1584,6 +1597,17 @@ export function configureAgenticProfiles<
   const webSearch = application.inject(ResearchWeb);
   const sourceRetriever = application.inject(ResearchSources);
   const researchEvidence = application.inject(ResearchRecords);
+  // Every maintained Agentic profile uses Hatchet as its workflow authority.
+  // Keep one scheduler bound through that selected capability so second-precision
+  // one-time workflow starts never fall through to the Kubernetes CronJob
+  // fallback in compatibility applications that have not yet promoted every
+  // provider into a target-free assembly profile.
+  application
+    .provide(Scheduler)
+    .local(() => Scheduler.hatchet())
+    .awsLocal(() => Scheduler.eventBridge())
+    .aws(() => Scheduler.eventBridge())
+    .kubernetes(() => Scheduler.hatchet());
   application.defaults({
     database: primaryDatabase,
     analytics,
@@ -1713,13 +1737,270 @@ function agenticSmtpNotifications(
   });
 }
 
+function agenticAssemblyInference(
+  value: ApplicationAIProvider,
+  constructorExport: string,
+) {
+  return defineApplicationCapabilityImplementation(AI, {
+    provider: {
+      package: '@applik8s/ai',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: '@applik8s/runtime-ai',
+    deploymentContributor: '@applik8s/deployment-typekro/providers/envoy-ai-gateway',
+    readiness: 'applik8s.ai.envoy-ai-gateway.readiness/v1alpha1',
+    lifecycle: 'application',
+    migration: 'applik8s.ai.envoy-ai-gateway.migration/v1alpha1',
+    evidence: ['AI.envoy.conformance'],
+    maturity: 'beta',
+    value,
+  });
+}
+
+function agenticAssemblyIdentity(
+  value: ApplicationIdentityProvider,
+  database: DatabaseBinding,
+  identity: string,
+) {
+  return defineApplicationCapabilityImplementation(IdentityProvider, {
+    provider: {
+      package: '@applik8s/applik8s',
+      export: identity,
+      version: '0.9.0',
+    },
+    runtimeAdapter: '@applik8s/start-agentic/identity-runtime',
+    readiness: 'applik8s.identity.agentic-start.readiness/v1alpha1',
+    lifecycle: value.infrastructure?.deletionPolicy === 'retain'
+      ? 'retained'
+      : 'application',
+    migration: 'applik8s.identity.agentic-start.migration/v1alpha1',
+    evidence: ['AgenticStart.identity.conformance'],
+    maturity: 'beta',
+    configuration: {
+      kind: value.kind,
+      ...(value.infrastructure
+        ? { infrastructure: value.infrastructure }
+        : {}),
+    } as unknown as JsonValue,
+    dependencies: [{
+      slot: 'database',
+      requirement: TransactionalDatabase,
+      requiredGuarantees: ['transactions', 'strongReads'],
+      operations: ['database.read', 'database.write'],
+      input: databaseDependencyInput(database),
+    }],
+    value,
+  });
+}
+
+function agenticAssemblyPayments(
+  value: ApplicationPaymentProvider,
+  constructorExport: string,
+) {
+  return defineApplicationCapabilityImplementation(PaymentProvider, {
+    provider: {
+      package: value.provider === 'stripe'
+        ? '@applik8s/billing-stripe'
+        : '@applik8s/billing',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: '@applik8s/billing/runtime',
+    readiness: `applik8s.billing.${value.provider}.readiness/v1alpha1`,
+    lifecycle: 'application',
+    migration: `applik8s.billing.${value.provider}.migration/v1alpha1`,
+    evidence: [`${constructorExport}.conformance`],
+    maturity: value.mode === 'live' ? 'beta' : 'stable',
+    configuration: canonicalJsonV1Value(
+      {
+        provider: value.provider,
+        kind: value.kind,
+        mode: value.mode,
+        capabilities: value.capabilities,
+      },
+      canonicalJsonCompatibleV1Policy,
+    ),
+    value,
+  });
+}
+
+function agenticAssemblyNotifications(
+  value: ApplicationNotificationDeliveryProvider,
+  constructorExport: string,
+) {
+  return defineApplicationCapabilityImplementation(NotificationDelivery, {
+    provider: {
+      package: value.provider === 'smtp'
+        ? '@applik8s/notifications-smtp'
+        : '@applik8s/notifications',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: '@applik8s/notifications/runtime',
+    readiness: `applik8s.notifications.${value.provider}.readiness/v1alpha1`,
+    lifecycle: 'application',
+    migration: `applik8s.notifications.${value.provider}.migration/v1alpha1`,
+    evidence: [`${constructorExport}.conformance`],
+    maturity: value.mode === 'live' ? 'beta' : 'stable',
+    configuration: {
+      provider: value.provider,
+      kind: value.kind,
+      mode: value.mode,
+    },
+    value,
+  });
+}
+
+function agenticAssemblyWebSearch(
+  value: ApplicationWebSearchProvider,
+  constructorExport: string,
+) {
+  const deployment = Reflect.get(value, 'deployment');
+  const managed = value.kind === 'searxng'
+    && value.mode === 'live'
+    && deployment
+    && typeof deployment === 'object'
+    && Reflect.get(deployment, 'management') === 'typekro';
+  return defineApplicationCapabilityImplementation(AgenticResearch.search, {
+    provider: {
+      package: value.kind === 'searxng'
+        ? '@applik8s/web-search-searxng'
+        : '@applik8s/web-search',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: value.kind === 'searxng'
+      ? '@applik8s/web-search-searxng/runtime'
+      : '@applik8s/web-search/runtime',
+    ...(managed
+      ? { deploymentContributor: '@applik8s/deployment-typekro/providers/searxng' }
+      : {}),
+    readiness: `applik8s.web-search.${value.kind}.readiness/v1alpha1`,
+    lifecycle: managed ? 'application' : value.mode === 'live' ? 'external' : 'application',
+    migration: `applik8s.web-search.${value.kind}.migration/v1alpha1`,
+    evidence: [`${constructorExport}.conformance`],
+    maturity: value.mode === 'live' ? 'beta' : 'stable',
+    configuration: {
+      provider: value.provider,
+      kind: value.kind,
+      mode: value.mode,
+      ...(deployment === undefined ? {} : { deployment }),
+    } as JsonValue,
+    value,
+  });
+}
+
+function agenticAssemblySourceRetriever(
+  value: ApplicationSourceRetrieverProvider,
+  constructorExport: string,
+) {
+  return defineApplicationCapabilityImplementation(AgenticResearch.retrieve, {
+    provider: {
+      package: value.kind === 'bounded-http-source-retriever'
+        ? '@applik8s/web-retrieval-http'
+        : '@applik8s/web-search',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: value.kind === 'bounded-http-source-retriever'
+      ? '@applik8s/web-retrieval-http/runtime'
+      : '@applik8s/web-search/source-runtime',
+    readiness: `applik8s.source-retriever.${value.kind}.readiness/v1alpha1`,
+    lifecycle: value.mode === 'live' ? 'external' : 'application',
+    migration: `applik8s.source-retriever.${value.kind}.migration/v1alpha1`,
+    evidence: [`${constructorExport}.conformance`],
+    maturity: value.mode === 'live' ? 'beta' : 'stable',
+    configuration: canonicalJsonV1Value(
+      {
+        provider: value.provider,
+        kind: value.kind,
+        mode: value.mode,
+        ...('policy' in value ? { policy: value.policy } : {}),
+      },
+      canonicalJsonCompatibleV1Policy,
+    ),
+    value,
+  });
+}
+
+function agenticAssemblyResearchEvidence(
+  value: ApplicationResearchEvidenceProvider,
+  database: DatabaseBinding | undefined,
+  constructorExport: string,
+) {
+  return defineApplicationCapabilityImplementation(AgenticResearch.evidence, {
+    provider: {
+      package: '@applik8s/research',
+      export: constructorExport,
+      version: '0.9.0',
+    },
+    runtimeAdapter: value.mode === 'durable'
+      ? '@applik8s/research/postgres-runtime'
+      : '@applik8s/research/runtime',
+    readiness: `applik8s.research-evidence.${value.provider}.readiness/v1alpha1`,
+    lifecycle: 'application',
+    migration: `applik8s.research-evidence.${value.provider}.migration/v1alpha1`,
+    evidence: [`${constructorExport}.conformance`],
+    maturity: value.mode === 'durable' ? 'beta' : 'stable',
+    configuration: canonicalJsonV1Value(
+      {
+        provider: value.provider,
+        kind: value.kind,
+        mode: value.mode,
+        storeIdentity: value.storeIdentity,
+        ...('connectionEnvName' in value
+          ? { connectionEnvName: value.connectionEnvName }
+          : {}),
+        ...('schema' in value ? { schema: value.schema } : {}),
+      },
+      canonicalJsonCompatibleV1Policy,
+    ),
+    ...(database
+      ? {
+          dependencies: [{
+            slot: 'database',
+            requirement: TransactionalDatabase,
+            requiredGuarantees: ['transactions', 'strongReads'],
+            operations: ['database.read', 'database.write'],
+            input: databaseDependencyInput(database),
+          }],
+        }
+      : {}),
+    value,
+  });
+}
+
+function agenticAssemblyObservability(value: ApplicationObservabilityProvider) {
+  return defineApplicationCapabilityImplementation(
+    Observability.named('primary'),
+    {
+      provider: {
+        package: '@applik8s/applik8s',
+        export: 'Observability.clickStack',
+        version: '0.9.0',
+      },
+      runtimeAdapter: '@applik8s/runtime-otel',
+      deploymentContributor: '@applik8s/deployment-typekro/providers/clickstack',
+      readiness: 'applik8s.observability.clickstack.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.observability.clickstack.migration/v1alpha1',
+      evidence: ['Observability.clickStack.conformance'],
+      maturity: 'beta',
+      value,
+    },
+  );
+}
+
 /**
  * Maintained provider/profile pack. Application identity, namespace, schema
  * registry, and processor placement are derived by the framework; modules add
  * their tables and relations to the bound database when included.
  */
-export function agenticProfilesWith(
-  options: AgenticProfilesOptions = {},
+export function agenticProfilesWith<
+  TSchema extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>,
+>(
+  options: AgenticProfilesOptions<TSchema> = {},
 ) {
   return module(
     'agenticProfiles',
@@ -1735,13 +2016,13 @@ export function agenticProfilesWith(
     );
     const configured = configureAgenticProfiles(application, {
       ...options,
-      migrations: { path: '../drizzle' },
+      migrations: options.migrations ?? { path: '../drizzle' },
       processor: {
-        group: 'agentic-commands',
+        group: options.processor?.group ?? 'agentic-commands',
         deployment: {
-          replicas: capacity.commandReplicas,
-          concurrency: capacity.commandConcurrency,
-          maxInFlight: capacity.commandConcurrency,
+          replicas: options.processor?.deployment?.replicas ?? capacity.commandReplicas,
+          concurrency: options.processor?.deployment?.concurrency ?? capacity.commandConcurrency,
+          maxInFlight: options.processor?.deployment?.maxInFlight ?? capacity.commandConcurrency,
         },
       },
     });
@@ -1757,7 +2038,6 @@ export function agenticProfilesWith(
     const developerEvents = AgenticStarter.events(assemblyContext);
     const developerObjects = AgenticStarter.objects(assemblyContext);
     const developerWorkflows = AgenticStarter.workflows(assemblyContext);
-    const developerScheduler = Scheduler.hatchet();
     const developerSearch = Search.postgres({
       database: developerDatabase,
       schema: 'agentic_search',
@@ -2130,6 +2410,231 @@ export function agenticProfilesWith(
         },
       },
     });
+    const dedicatedSpec = application.installation.spec as Extract<
+      AgenticInstallationSpec,
+      { readonly profile: 'dedicated' }
+    >;
+    const dedicatedDatabase = AgenticDedicated.database(assemblyContext);
+    const dedicatedAnalytics = AgenticDedicated.analytics(assemblyContext);
+    const dedicatedEvents = AgenticDedicated.events(assemblyContext);
+    const dedicatedObjects = AgenticDedicated.objects(
+      assemblyContext,
+      dedicatedSpec.providers.objects,
+    );
+    const dedicatedWorkflows = AgenticDedicated.workflows(assemblyContext);
+    const dedicatedSearch = AgenticDedicated.search(assemblyContext);
+    const dedicatedInferenceValue = AgenticDedicated.inference(
+      dedicatedSpec.providers.inference,
+      assemblyContext,
+    );
+    const dedicatedInference = agenticAssemblyInference(
+      dedicatedInferenceValue,
+      'AI.envoy',
+    );
+    const dedicatedIdentityValue = options.dedicatedIdentity?.()
+      ?? AgenticDedicated.identity(
+        dedicatedSpec.providers.identity,
+        assemblyContext,
+      );
+    const dedicatedIdentity = agenticAssemblyIdentity(
+      dedicatedIdentityValue,
+      dedicatedDatabase,
+      'AgenticDedicated.identity',
+    );
+    const dedicatedPaymentsValue = options.dedicatedPayments?.(dedicatedSpec)
+      ?? AgenticDedicated.payments(
+        dedicatedSpec.providers.payments,
+        assemblyContext,
+      );
+    const dedicatedPayments = agenticAssemblyPayments(
+      dedicatedPaymentsValue,
+      'StripePayments.fromSecret',
+    );
+    const dedicatedNotificationsValue = options.dedicatedNotifications?.(
+      dedicatedSpec,
+    ) ?? AgenticDedicated.notifications(
+      dedicatedSpec.providers.notifications,
+      assemblyContext,
+    );
+    const dedicatedNotifications = agenticAssemblyNotifications(
+      dedicatedNotificationsValue,
+      'SmtpNotificationDelivery.fromSecret',
+    );
+    const dedicatedWebSearchValue = options.dedicatedWebSearch?.(dedicatedSpec)
+      ?? agenticManagedWebSearch(
+        dedicatedSpec.providers.webSearch,
+        assemblyContext,
+      );
+    const dedicatedWebSearch = agenticAssemblyWebSearch(
+      dedicatedWebSearchValue,
+      'SearxngWebSearch.managed',
+    );
+    const dedicatedSourceRetrieverValue = options.dedicatedSourceRetriever?.(
+      dedicatedSpec,
+    ) ?? BoundedHttpSourceRetriever.create();
+    const dedicatedSourceRetriever = agenticAssemblySourceRetriever(
+      dedicatedSourceRetrieverValue,
+      'BoundedHttpSourceRetriever.create',
+    );
+    const dedicatedResearchEvidenceValue = options.dedicatedResearchEvidence?.(
+      dedicatedSpec,
+    ) ?? agenticManagedResearchEvidence(assemblyContext);
+    const dedicatedResearchEvidence = agenticAssemblyResearchEvidence(
+      dedicatedResearchEvidenceValue,
+      dedicatedDatabase,
+      'PostgresResearchEvidence.create',
+    );
+    const dedicatedObservability = agenticAssemblyObservability(
+      Observability.clickStack({
+        namespace: assemblyContext.namespace,
+        storageSize: '100Gi',
+      }),
+    );
+    const dedicatedHistoryDataset = Lakehouse.datasetProviderRequired({
+      reason: 'The Kubernetes dedicated profile requires an individually qualified external lakehouse dataset.',
+    });
+    const dedicatedHistoryQueries = Lakehouse.queryProviderRequired({
+      reason: 'The Kubernetes dedicated profile requires an individually qualified external lakehouse query provider.',
+    });
+    const dedicatedActorRuntime = ActorRuntime.celld({
+      namespace: assemblyContext.namespace,
+      stateStore: dedicatedObjects,
+      replicas: 3,
+    });
+    const dedicatedHost = ApplicationHost.kubernetes({
+      name: `${application.name}-app`,
+      namespace: assemblyContext.namespace,
+      replicas: capacity.webReplicas,
+      resources: {
+        requests: {
+          cpu: capacity.webCpuRequest,
+          memory: capacity.webMemoryRequest,
+        },
+        limits: {
+          cpu: capacity.webCpuLimit,
+          memory: capacity.webMemoryLimit,
+        },
+      },
+    });
+
+    const externalSpec = application.installation.spec as Extract<
+      AgenticInstallationSpec,
+      { readonly profile: 'external' }
+    >;
+    const externalDatabase = AgenticExternal.database(
+      externalSpec.providers.database,
+      assemblyContext,
+    );
+    const externalAnalytics = AgenticExternal.analytics(
+      externalSpec.providers.analytics,
+      assemblyContext,
+    );
+    const externalEvents = AgenticExternal.events(
+      externalSpec.providers.events,
+      assemblyContext,
+    );
+    const externalObjects = AgenticExternal.objects(
+      externalSpec.providers.objects,
+      assemblyContext,
+    );
+    const externalWorkflows = AgenticExternal.workflows(
+      externalSpec.providers.workflows,
+      assemblyContext,
+    );
+    const externalSearch = AgenticExternal.search(
+      externalSpec.providers.search,
+      assemblyContext,
+    );
+    const externalInferenceValue = options.externalInference?.(
+      externalSpec,
+      assemblyContext,
+    ) ?? AgenticExternal.inference(
+      externalSpec.providers.inference,
+      assemblyContext,
+    );
+    const externalInference = agenticAssemblyInference(
+      externalInferenceValue,
+      'AI.envoy',
+    );
+    const externalIdentityValue = options.externalIdentity?.(externalSpec)
+      ?? AgenticExternal.identity(externalSpec.providers.identity);
+    const externalIdentity = agenticAssemblyIdentity(
+      externalIdentityValue,
+      externalDatabase,
+      'AgenticExternal.identity',
+    );
+    const externalPaymentsValue = options.externalPayments?.(externalSpec)
+      ?? AgenticExternal.payments(
+        externalSpec.providers.payments,
+        assemblyContext,
+      );
+    const externalPayments = agenticAssemblyPayments(
+      externalPaymentsValue,
+      'StripePayments.fromSecret',
+    );
+    const externalNotificationsValue = options.externalNotifications?.(
+      externalSpec,
+    ) ?? AgenticExternal.notifications(
+      externalSpec.providers.notifications,
+      assemblyContext,
+    );
+    const externalNotifications = agenticAssemblyNotifications(
+      externalNotificationsValue,
+      'SmtpNotificationDelivery.fromSecret',
+    );
+    const externalWebSearchValue = options.externalWebSearch?.(externalSpec)
+      ?? AgenticExternal.webSearch(externalSpec.providers.webSearch);
+    const externalWebSearch = agenticAssemblyWebSearch(
+      externalWebSearchValue,
+      'SearxngWebSearch.external',
+    );
+    const externalSourceRetrieverValue = options.externalSourceRetriever?.(
+      externalSpec,
+    ) ?? BoundedHttpSourceRetriever.create();
+    const externalSourceRetriever = agenticAssemblySourceRetriever(
+      externalSourceRetrieverValue,
+      'BoundedHttpSourceRetriever.create',
+    );
+    const externalResearchEvidenceValue = options.externalResearchEvidence?.(
+      externalSpec,
+    ) ?? agenticExternalResearchEvidence(externalSpec, assemblyContext);
+    const externalResearchEvidence = agenticAssemblyResearchEvidence(
+      externalResearchEvidenceValue,
+      externalDatabase,
+      'PostgresResearchEvidence.create',
+    );
+    const externalObservability = agenticAssemblyObservability(
+      Observability.clickStack({
+        namespace: assemblyContext.namespace,
+        storageSize: '20Gi',
+      }),
+    );
+    const externalHistoryDataset = Lakehouse.datasetProviderRequired({
+      reason: 'The Kubernetes external profile requires an individually qualified external lakehouse dataset.',
+    });
+    const externalHistoryQueries = Lakehouse.queryProviderRequired({
+      reason: 'The Kubernetes external profile requires an individually qualified external lakehouse query provider.',
+    });
+    const externalActorRuntime = ActorRuntime.celld({
+      namespace: assemblyContext.namespace,
+      stateStore: externalObjects,
+      replicas: 2,
+    });
+    const externalHost = ApplicationHost.kubernetes({
+      name: `${application.name}-app`,
+      namespace: assemblyContext.namespace,
+      replicas: capacity.webReplicas,
+      resources: {
+        requests: {
+          cpu: capacity.webCpuRequest,
+          memory: capacity.webMemoryRequest,
+        },
+        limits: {
+          cpu: capacity.webCpuLimit,
+          memory: capacity.webMemoryLimit,
+        },
+      },
+    });
 
     application.profile('starter', (profile) => {
       profile.defaults({ retention: 'retain', deletionApproval: 'required' });
@@ -2144,7 +2649,6 @@ export function agenticProfilesWith(
       profile.provide(ObjectStorage, developerObjects);
       profile.provide(WorkflowEngine.named('primary'), developerWorkflows);
       profile.provide(WorkflowEngine, developerWorkflows);
-      profile.provide(Scheduler, developerScheduler);
       profile.provide(Search.named('primary'), developerSearch);
       profile.provide(Search, developerSearch);
       profile.provide(AI.named('inference'), starterInference);
@@ -2179,7 +2683,6 @@ export function agenticProfilesWith(
       profile.provide(ObjectStorage, developerObjects);
       profile.provide(WorkflowEngine.named('primary'), developerWorkflows);
       profile.provide(WorkflowEngine, developerWorkflows);
-      profile.provide(Scheduler, developerScheduler);
       profile.provide(Search.named('primary'), developerSearch);
       profile.provide(Search, developerSearch);
       profile.provide(AI.named('inference'), developerInference);
@@ -2197,6 +2700,74 @@ export function agenticProfilesWith(
       profile.provide(ActorRuntime, developerActorRuntime);
       profile.provide(ApplicationHost, developerHost);
       for (const fragment of options.assemblyProfileFragments?.developer ?? []) {
+        profile.include(fragment);
+      }
+    });
+
+    application.profile('dedicated', (profile) => {
+      profile.defaults({ retention: 'retain', deletionApproval: 'required' });
+      profile.qualify({ id: 'agentic-start-dedicated-kubernetes' });
+      profile.provide(TransactionalDatabase.named('primary'), dedicatedDatabase);
+      profile.provide(TransactionalDatabase, dedicatedDatabase);
+      profile.provide(AnalyticalDatabase.named('primary'), dedicatedAnalytics);
+      profile.provide(AnalyticalDatabase, dedicatedAnalytics);
+      profile.provide(EventLog.named('primary'), dedicatedEvents);
+      profile.provide(EventLog, dedicatedEvents);
+      profile.provide(ObjectStorage.named('primary'), dedicatedObjects);
+      profile.provide(ObjectStorage, dedicatedObjects);
+      profile.provide(WorkflowEngine.named('primary'), dedicatedWorkflows);
+      profile.provide(WorkflowEngine, dedicatedWorkflows);
+      profile.provide(Search.named('primary'), dedicatedSearch);
+      profile.provide(Search, dedicatedSearch);
+      profile.provide(AI.named('inference'), dedicatedInference);
+      profile.provide(AI, dedicatedInference);
+      profile.provide(IdentityProvider.named('primary'), dedicatedIdentity);
+      profile.provide(IdentityProvider, dedicatedIdentity);
+      profile.provide(PaymentProvider.named('primary'), dedicatedPayments);
+      profile.provide(NotificationDelivery.named('transactional'), dedicatedNotifications);
+      profile.provide(AgenticResearch.search, dedicatedWebSearch);
+      profile.provide(AgenticResearch.retrieve, dedicatedSourceRetriever);
+      profile.provide(AgenticResearch.evidence, dedicatedResearchEvidence);
+      profile.provide(Observability.named('primary'), dedicatedObservability);
+      profile.provide(LakehouseDataset.named('historical-usage'), dedicatedHistoryDataset);
+      profile.provide(LakehouseQuery.named('historical-usage'), dedicatedHistoryQueries);
+      profile.provide(ActorRuntime, dedicatedActorRuntime);
+      profile.provide(ApplicationHost, dedicatedHost);
+      for (const fragment of options.assemblyProfileFragments?.dedicated ?? []) {
+        profile.include(fragment);
+      }
+    });
+
+    application.profile('external', (profile) => {
+      profile.defaults({ retention: 'retain', deletionApproval: 'required' });
+      profile.qualify({ id: 'agentic-start-external-kubernetes' });
+      profile.provide(TransactionalDatabase.named('primary'), externalDatabase);
+      profile.provide(TransactionalDatabase, externalDatabase);
+      profile.provide(AnalyticalDatabase.named('primary'), externalAnalytics);
+      profile.provide(AnalyticalDatabase, externalAnalytics);
+      profile.provide(EventLog.named('primary'), externalEvents);
+      profile.provide(EventLog, externalEvents);
+      profile.provide(ObjectStorage.named('primary'), externalObjects);
+      profile.provide(ObjectStorage, externalObjects);
+      profile.provide(WorkflowEngine.named('primary'), externalWorkflows);
+      profile.provide(WorkflowEngine, externalWorkflows);
+      profile.provide(Search.named('primary'), externalSearch);
+      profile.provide(Search, externalSearch);
+      profile.provide(AI.named('inference'), externalInference);
+      profile.provide(AI, externalInference);
+      profile.provide(IdentityProvider.named('primary'), externalIdentity);
+      profile.provide(IdentityProvider, externalIdentity);
+      profile.provide(PaymentProvider.named('primary'), externalPayments);
+      profile.provide(NotificationDelivery.named('transactional'), externalNotifications);
+      profile.provide(AgenticResearch.search, externalWebSearch);
+      profile.provide(AgenticResearch.retrieve, externalSourceRetriever);
+      profile.provide(AgenticResearch.evidence, externalResearchEvidence);
+      profile.provide(Observability.named('primary'), externalObservability);
+      profile.provide(LakehouseDataset.named('historical-usage'), externalHistoryDataset);
+      profile.provide(LakehouseQuery.named('historical-usage'), externalHistoryQueries);
+      profile.provide(ActorRuntime, externalActorRuntime);
+      profile.provide(ApplicationHost, externalHost);
+      for (const fragment of options.assemblyProfileFragments?.external ?? []) {
         profile.include(fragment);
       }
     });

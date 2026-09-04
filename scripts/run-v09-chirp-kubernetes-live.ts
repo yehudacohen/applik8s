@@ -76,6 +76,7 @@ async function destroyChirp(): Promise<void> {
     'packages/cli/src/bin.ts',
     'destroy',
     'examples/chirp-start/src/application.ts',
+    '--profile', 'production-kubernetes',
     '--context', context,
     '--out-dir', 'examples/chirp-start/.applik8s/deploy',
     '--composition-name', 'app',

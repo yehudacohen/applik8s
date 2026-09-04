@@ -22,6 +22,7 @@ import {
   IndexStore,
   ObjectStorage,
   Queue,
+  Scheduler,
   Secret,
   secret,
   StructuredGeneration,
@@ -71,6 +72,43 @@ function graphExpression(value: unknown): string {
 }
 
 describe('application deployment profiles', () => {
+  it('selects an unqualified default provider by deployment target', () => {
+    const application = app('target-selected-default', {
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+
+    application
+      .provide(Scheduler)
+      .local(() => Scheduler.hatchet())
+      .awsLocal(() => Scheduler.eventBridge())
+      .aws(() => Scheduler.eventBridge())
+      .kubernetes(() => Scheduler.hatchet());
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.id === 'provider.scheduler',
+    );
+    expect(provider).toMatchObject({
+      implementation: 'application-target-provider-selection',
+      config: expect.objectContaining({
+        targetSelection: expect.objectContaining({
+          targets: expect.objectContaining({
+            local: expect.objectContaining({
+              configuration: expect.objectContaining({ kind: 'hatchet-scheduler' }),
+            }),
+            aws: expect.objectContaining({
+              configuration: expect.objectContaining({ kind: 'eventbridge-scheduler' }),
+            }),
+            kubernetes: expect.objectContaining({
+              configuration: expect.objectContaining({ kind: 'hatchet-scheduler' }),
+            }),
+          }),
+        }),
+      }),
+    });
+    expect(validateApplicationGraph(applicationGraphFor(application.composition)!)).toEqual([]);
+  });
+
   it('rejects ambiguous StructuredGeneration credential ownership', () => {
     expect(() => StructuredGeneration.http({
       endpoint: 'https://generation.example.test',

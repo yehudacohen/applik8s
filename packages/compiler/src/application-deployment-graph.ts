@@ -131,7 +131,10 @@ export async function emitApplicationDeploymentGraph(
     bundle,
     request.bundlePath,
     request.projectRoot,
-    request.graph,
+    // Artifact requirements follow the concrete assembly-profile graph. A
+    // provider selected only by the profile (notably ActorRuntime.celld) is
+    // intentionally absent from the authored semantic graph.
+    deploymentGraph,
     request.sourceGraphDigest,
     request.celldRuntimeRelease ?? applicationCelldRuntimeRelease,
     validationMaterialized.resources,
@@ -751,13 +754,23 @@ async function materializeKroString(
   if (!segments.some((segment) => segment.kind === 'expression')) return value;
   const evaluated = await Promise.all(segments.map(async (segment) => {
     if (segment.kind === 'literal') return segment.value;
-    const expression = expressionIR(segment.value);
+    const expression = expressionIR(
+      concretizeApplicationHasExpressions(
+        segment.value,
+        installationSpec,
+      ),
+    );
     if (expression.references.some((reference) => reference.source !== 'spec')) {
       return `\${${segment.value}}`;
     }
     try {
       return await evaluateExpressionIR(expression, {
-        resources: new Map([['schema', { spec: installationSpec }]]),
+        resources: new Map([['schema', {
+          spec: applicationInstallationSpecWithAbsentReferences(
+            expression.expression,
+            installationSpec,
+          ),
+        }]]),
       });
     } catch {
       // KRO-only functions such as json.marshal have no portable direct
@@ -776,6 +789,139 @@ async function materializeKroString(
     }
     return String(entry);
   }).join('');
+}
+
+/**
+ * Replace only KRO's direct installation-path `has(...)` guards with their
+ * concrete truth values. The direct CEL evaluator resolves member access
+ * before invoking `has`, so asking it to inspect an absent optional field
+ * throws before the authored fallback can be selected. This scanner keeps
+ * quoted fallback data untouched and does not create a general CEL evaluator.
+ */
+export function concretizeApplicationHasExpressions(
+  expression: string,
+  spec: Readonly<Record<string, unknown>>,
+): string {
+  let resolved = '';
+  let index = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? '';
+    if (quote) {
+      resolved += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      resolved += character;
+      index += 1;
+      continue;
+    }
+    const previous = index === 0 ? '' : expression[index - 1] ?? '';
+    if (
+      expression.startsWith('has', index)
+      && !/[A-Za-z0-9_]/.test(previous)
+    ) {
+      const match = /^has\s*\(\s*(schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\)/.exec(
+        expression.slice(index),
+      );
+      if (match?.[1]) {
+        resolved += applicationInstallationSpecHasPath(spec, match[1])
+          ? 'true'
+          : 'false';
+        index += match[0].length;
+        continue;
+      }
+    }
+    resolved += character;
+    index += 1;
+  }
+  return resolved;
+}
+
+/**
+ * Supply inert null leaves for installation paths referenced by a CEL
+ * expression but absent from the selected profile. Some CEL evaluators resolve
+ * member paths before applying short-circuit or conditional semantics. The
+ * selected branch still fails closed when it actually consumes an absent leaf,
+ * while inactive optional branches can reach their authored fallback.
+ */
+export function applicationInstallationSpecWithAbsentReferences(
+  expression: string,
+  spec: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const copy = structuredClone(spec) as Record<string, unknown>;
+  for (const reference of unquotedApplicationSpecReferences(expression)) {
+    const segments = reference.split('.').slice(2);
+    let cursor = copy;
+    for (const [index, segment] of segments.entries()) {
+      if (index === segments.length - 1) {
+        if (!Object.hasOwn(cursor, segment)) cursor[segment] = null;
+        continue;
+      }
+      const current = cursor[segment];
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        if (current !== undefined) break;
+        cursor[segment] = {};
+      }
+      cursor = cursor[segment] as Record<string, unknown>;
+    }
+  }
+  return copy;
+}
+
+function unquotedApplicationSpecReferences(expression: string): readonly string[] {
+  const references: string[] = [];
+  let index = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? '';
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    const match = /^schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+/.exec(
+      expression.slice(index),
+    );
+    if (match?.[0]) {
+      references.push(match[0]);
+      index += match[0].length;
+      continue;
+    }
+    index += 1;
+  }
+  return references;
+}
+
+function applicationInstallationSpecHasPath(
+  spec: Readonly<Record<string, unknown>>,
+  path: string,
+): boolean {
+  let current: unknown = spec;
+  for (const segment of path.split('.').slice(2)) {
+    if (
+      !current
+      || typeof current !== 'object'
+      || Array.isArray(current)
+      || !Object.hasOwn(current, segment)
+    ) return false;
+    current = Reflect.get(current, segment);
+  }
+  return true;
 }
 
 function kroTemplateSegments(value: string): readonly (
@@ -2058,7 +2204,7 @@ function artifactSemanticPlacement(
   return { semanticNodeId, executionNodeIds: [...members].sort() };
 }
 
-function applicationRequiresCelldArtifact(graph: ApplicationGraph): boolean {
+export function applicationRequiresCelldArtifact(graph: ApplicationGraph): boolean {
   return graph.nodes.some((node) =>
     node.kind === "provider"
     && node.interface === "ActorRuntime"

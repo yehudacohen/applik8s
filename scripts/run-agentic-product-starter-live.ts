@@ -541,7 +541,7 @@ try {
       execution,
       'destroy the prior generated product through its preserved Alchemy and TypeKro state',
       cli,
-      ['destroy', '--context', context],
+      ['destroy', '--profile', assemblyProfile, '--context', context],
       target,
     );
     await waitForIdentityStartAbsent(
@@ -901,7 +901,7 @@ try {
     execution,
     'destroy the generated product through Alchemy and TypeKro',
     cli,
-    ['destroy', '--context', context],
+    ['destroy', '--profile', assemblyProfile, '--context', context],
     target,
   );
   deployed = false;
@@ -1170,7 +1170,7 @@ try {
         execution,
         'clean up a failed generated product qualification',
         cli,
-        ['destroy', '--context', context],
+        ['destroy', '--profile', assemblyProfile, '--context', context],
         target,
       );
     } catch (cleanupError) {

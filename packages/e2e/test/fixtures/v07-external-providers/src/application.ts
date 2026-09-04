@@ -2,6 +2,7 @@ import {
   AnalyticalDatabase,
   Analytics,
   app,
+  Database,
   EventLog,
   IdentityProvider,
   ObjectStorage,
@@ -35,22 +36,21 @@ export const application = app('identity-external-providers', {
   namespace,
 });
 
-application.provide(
-  TransactionalDatabase,
-  TransactionalDatabase.postgres({
-    name: 'primary',
-    clusterName: 'identity-external-db',
-    namespace,
-    database: 'identity_start',
-    instances: 1,
-    storage: {
-      size: '2Gi',
-      storageClassName: 'local-path',
-    },
-    lifecycle: { deletionPolicy: 'delete' },
-    ownership: 'direct-provisioned',
-  }),
-);
+const database = Database.postgres({
+  name: 'primary',
+  clusterName: 'identity-external-db',
+  namespace,
+  database: 'identity_start',
+  instances: 1,
+  storage: {
+    size: '2Gi',
+    storageClassName: 'local-path',
+  },
+  lifecycle: { deletionPolicy: 'delete' },
+  ownership: 'direct-provisioned',
+});
+
+application.provide(TransactionalDatabase, database);
 
 application.provide(
   AnalyticalDatabase,
@@ -123,27 +123,35 @@ application.provide(
   }),
 );
 
-application.provide(
-  WorkflowEngine,
-  WorkflowEngine.hatchet({
-    name: 'identity-external-workflows',
-    namespace,
-    provision: true,
-    mode: 'stack',
-    hostPort:
-      'hatchet-engine.identity-start-system.svc:7070',
-    apiUrl:
-      'http://hatchet-api.identity-start-system.svc:8080',
-    tokenKey: 'HATCHET_CLIENT_TOKEN',
-    dashboard: 'internal',
-    worker: {
-      replicas: 1,
-      taskSlots: 8,
-      durableSlots: 8,
-      scaling: { mode: 'fixed' },
-    },
-  }),
-);
+const workflows = WorkflowEngine.hatchet({
+  name: 'identity-external-workflows',
+  namespace,
+  provision: true,
+  mode: 'stack',
+  hostPort:
+    'hatchet-engine.identity-start-system.svc:7070',
+  apiUrl:
+    'http://hatchet-api.identity-start-system.svc:8080',
+  tokenKey: 'HATCHET_CLIENT_TOKEN',
+  dashboard: 'internal',
+  worker: {
+    replicas: 1,
+    taskSlots: 8,
+    durableSlots: 8,
+    scaling: { mode: 'fixed' },
+  },
+});
+
+application.provide(WorkflowEngine, workflows);
+
+// This fixture owns infrastructure but deliberately has no application host.
+// Binding its existing workflow engine gives deployment an inspectable
+// Kubernetes family without fabricating a workload merely for CLI routing.
+application.profile('external-providers', (profile) => {
+  profile.defaults({ retention: 'delete', deletionApproval: 'automatic' });
+  profile.qualify({ id: 'identity-external-providers-kubernetes' });
+  profile.provide(WorkflowEngine, workflows);
+});
 
 application.provide(
   Search,

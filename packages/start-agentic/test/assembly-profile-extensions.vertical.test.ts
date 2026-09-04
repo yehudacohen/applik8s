@@ -32,18 +32,41 @@ describe('Agentic Start assembly-profile extensions', () => {
       assemblyProfileFragments: {
         starter: [productScheduling],
         developer: [productScheduling],
+        dedicated: [productScheduling],
+        external: [productScheduling],
       },
     }) as never);
 
-    for (const name of ['starter', 'developer']) {
+    for (const name of ['starter', 'developer', 'dedicated', 'external']) {
       const profile = application.assemblyProfiles.get(name);
       expect(profile?.fragments).toContain('product.scheduling.v1');
-      expect(application.implementationPlan(name).bindings).toEqual(
+      const plan = application.implementationPlan(name);
+      expect(plan.bindings).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             capability: expect.objectContaining({
               interface: 'Scheduler@v1alpha1',
               qualifier: 'product',
+            }),
+          }),
+        ]),
+      );
+      expect(plan.bindings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            capability: expect.objectContaining({
+              interface: 'ApplicationHost@v1alpha1',
+            }),
+          }),
+          expect.objectContaining({
+            capability: expect.objectContaining({
+              interface: 'ActorRuntime@v1alpha1',
+            }),
+          }),
+          expect.objectContaining({
+            capability: expect.objectContaining({
+              interface: 'IdentityProvider@v1alpha1',
+              qualifier: 'primary',
             }),
           }),
         ]),

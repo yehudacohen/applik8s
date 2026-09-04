@@ -94,4 +94,37 @@ describe('Celld operator compiler integration', () => {
       await rm(directory, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('discovers Celld artifacts and its operator from the selected assembly profile', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'applik8s-profile-celld-'));
+    try {
+      const result = await compileTypeKroComposition({
+        entrypoint: resolve('packages/compiler/test/fixtures/v09-profile-selected-celld-app.ts'),
+        compositionName: 'profileSelectedCelldProof',
+        executionTarget: 'kubernetes',
+        profile: 'starter',
+        outDir: directory,
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: true,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+      if (!result.ok) throw new Error(result.error.message);
+      expect(result.value.operatorCompiles.map(compiled => compiled.manifest.metadata.name))
+        .toContain('applik8s-celld-operator');
+      expect(result.value.artifacts.manifest.spec.operators).toContainEqual(expect.objectContaining({
+        name: 'applik8s-celld-operator',
+      }));
+      expect(result.value.artifacts.manifest.spec.applicationGraph).toBeDefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

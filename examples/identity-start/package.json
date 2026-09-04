@@ -15,8 +15,8 @@
     "build:prepared": "vite build",
     "preview": "vite preview",
     "db:generate": "drizzle-kit generate",
-    "plan": "bun run build && applik8s plan",
-    "deploy": "bun run build && applik8s deploy",
+    "plan": "bun run build && applik8s plan --profile starter",
+    "deploy": "bun run build && applik8s deploy --profile starter",
     "dev:cluster": "bun run deploy && vite dev",
     "status": "applik8s status",
     "destroy": "applik8s destroy"
