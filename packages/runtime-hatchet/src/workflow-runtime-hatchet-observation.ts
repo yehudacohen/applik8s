@@ -76,7 +76,12 @@ export async function waitForHatchetResult<TOutput extends object>(
           `Workflow ${runId} was cancelled.`,
         );
       }
-      if (terminalFailureStatus(status)) throw providerFailure(run, runId, status);
+      if (
+        terminalFailureStatus(status)
+        && !transientHatchetExecutionFailure(run)
+      ) {
+        throw providerFailure(run, runId, status);
+      }
     } catch (cause) {
       if (cause instanceof ApplicationDurableError) throw cause;
       if (cause instanceof ApplicationWorkflowObservationError) throw cause;
@@ -141,6 +146,13 @@ export async function observeHatchetWorkflowRun<TOutput extends object>(
     ...(startedAt ? { startedAt } : {}),
     ...(finishedAt ? { finishedAt } : {}),
   };
+  if (terminalFailureStatus(status) && transientHatchetExecutionFailure(run)) {
+    return {
+      phase: 'Running',
+      admittedAt: observedAdmittedAt,
+      ...(startedAt ? { startedAt } : {}),
+    };
+  }
   if (status === 'COMPLETED') {
     return { phase: 'Succeeded', result: providerOutput<TOutput>(run), ...common };
   }
@@ -232,6 +244,23 @@ function providerFailureMessage(run: object): string {
     }
   }
   return '';
+}
+
+/**
+ * Hatchet can briefly expose an execution attempt as FAILED while its durable
+ * listener is being reattached after a worker replacement. The provider then
+ * retries the same logical run and eventually exposes its authoritative
+ * terminal state. Treating this SDK transport message as application failure
+ * breaks `run.result()` exactly at the process-recovery boundary durable
+ * workflows promise to survive.
+ *
+ * Keep the classification deliberately narrow: authored failures, durable
+ * application errors, and every other provider failure remain terminal.
+ */
+function transientHatchetExecutionFailure(run: object): boolean {
+  return providerFailureMessage(run)
+    .toLocaleLowerCase('en-US')
+    .includes('durablelistener stopped');
 }
 
 function providerDate(run: object, key: string): string | undefined {

@@ -113,6 +113,55 @@ describe('Hatchet workflow result observation', () => {
     expect(client.runs.get).toHaveBeenCalledTimes(3);
   });
 
+  it('reattaches after Hatchet exposes a transient durable-listener failure', async () => {
+    const client = { runs: { get: vi.fn()
+      .mockResolvedValueOnce({
+        run: {
+          status: 'FAILED',
+          startedAt: '2026-09-04T06:56:39.000Z',
+          finishedAt: '2026-09-04T06:56:40.000Z',
+          errorMessage: JSON.stringify({
+            message: 'DurableListener stopped',
+            stack: 'Error: DurableListener stopped',
+          }),
+        },
+      })
+      .mockResolvedValue({
+        run: {
+          status: 'COMPLETED',
+          output: { phase: 'Ready' },
+        },
+      }) } };
+
+    await expect(waitForHatchetResult<{ phase: string }>(client as never, 'run-replaced', {
+      timeoutMs: 1_000,
+      pollIntervalMs: 1,
+    })).resolves.toEqual({ phase: 'Ready' });
+    expect(client.runs.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports transient durable-listener failures as running without a stale finish time', async () => {
+    const client = { runs: { get: vi.fn(async () => ({
+      run: {
+        status: 'FAILED',
+        createdAt: '2026-09-04T06:56:38.000Z',
+        startedAt: '2026-09-04T06:56:39.000Z',
+        finishedAt: '2026-09-04T06:56:40.000Z',
+        errorMessage: '{"message":"DurableListener stopped"}',
+      },
+    })) } };
+
+    await expect(observeHatchetWorkflowRun(
+      client as never,
+      'run-replaced',
+      '2026-09-04T06:56:37.000Z',
+    )).resolves.toEqual({
+      phase: 'Running',
+      admittedAt: '2026-09-04T06:56:38.000Z',
+      startedAt: '2026-09-04T06:56:39.000Z',
+    });
+  });
+
   it('never exposes provider authorization headers through its durable error boundary', async () => {
     const secret = 'should-never-escape';
     const client = { runs: { get: vi.fn(async () => {
